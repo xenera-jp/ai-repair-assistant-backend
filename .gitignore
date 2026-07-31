@@ -35,4 +35,6 @@ build/
 ### Local configuration ###
 .env
 .env.local
-data/
+data/*
+!data/knowledge/
+!data/knowledge/*.xlsx

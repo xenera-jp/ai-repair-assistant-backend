@@ -1,8 +1,12 @@
 spring:
   application:
     name: ai-repair-assistant-backend
+  config:
+    import:
+      - optional:file:.env.local[.properties]
+      - optional:file:../.env.local[.properties]
   datasource:
-    url: ${MYSQL_URL:jdbc:mysql://localhost:3306/ai_repair_assistant?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai}
+    url: ${MYSQL_URL:jdbc:mysql://localhost:3307/ai_repair_assistant?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai}
     username: ${MYSQL_USER:repair_assistant}
     password: ${MYSQL_PASSWORD:repair_assistant}
   jpa:
@@ -33,8 +37,9 @@ repair-assistant:
     allowed-origins:
       - ${FRONTEND_ORIGIN:http://localhost:5173}
   knowledge:
-    source-path: ${KNOWLEDGE_SOURCE_PATH:/data/knowledge}
+    source-path: ${KNOWLEDGE_SOURCE_PATH:./data/knowledge}
     version: ${KNOWLEDGE_VERSION:demo-v1}
+    import-enabled: ${KNOWLEDGE_IMPORT_ENABLED:true}
   qdrant:
     url: ${QDRANT_URL:http://localhost:6333}
     api-key: ${QDRANT_API_KEY:}

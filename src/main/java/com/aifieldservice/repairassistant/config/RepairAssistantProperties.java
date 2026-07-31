@@ -14,7 +14,7 @@ public record RepairAssistantProperties(
     public record Web(List<String> allowedOrigins) {
     }
 
-    public record Knowledge(String sourcePath, String version) {
+    public record Knowledge(String sourcePath, String version, boolean importEnabled) {
     }
 
     public record Qdrant(String url, String apiKey, String collection) {
