@@ -1,0 +1,28 @@
+spring:
+  datasource:
+    url: jdbc:h2:mem:repair_assistant;MODE=MySQL;DB_CLOSE_DELAY=-1
+    username: sa
+    password:
+  flyway:
+    enabled: false
+  jpa:
+    hibernate:
+      ddl-auto: none
+
+repair-assistant:
+  web:
+    allowed-origins:
+      - http://localhost:5173
+  knowledge:
+    source-path: /private/tmp/repair-assistant-test-knowledge
+    version: test-v1
+  qdrant:
+    url: http://localhost:6333
+    api-key:
+    collection: test_knowledge
+  openai:
+    base-url: https://api.openai.com/v1
+    api-key:
+    chat-model: test-chat-model
+    embedding-model: test-embedding-model
+    embedding-dimensions: 512

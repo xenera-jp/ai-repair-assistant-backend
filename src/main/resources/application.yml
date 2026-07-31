@@ -1,0 +1,47 @@
+spring:
+  application:
+    name: ai-repair-assistant-backend
+  datasource:
+    url: ${MYSQL_URL:jdbc:mysql://localhost:3306/ai_repair_assistant?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai}
+    username: ${MYSQL_USER:repair_assistant}
+    password: ${MYSQL_PASSWORD:repair_assistant}
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    validate-migration-naming: true
+
+server:
+  port: ${SERVER_PORT:8080}
+  shutdown: graceful
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+repair-assistant:
+  web:
+    allowed-origins:
+      - ${FRONTEND_ORIGIN:http://localhost:5173}
+  knowledge:
+    source-path: ${KNOWLEDGE_SOURCE_PATH:/data/knowledge}
+    version: ${KNOWLEDGE_VERSION:demo-v1}
+  qdrant:
+    url: ${QDRANT_URL:http://localhost:6333}
+    api-key: ${QDRANT_API_KEY:}
+    collection: ${QDRANT_COLLECTION:ai_repair_knowledge_v1}
+  openai:
+    base-url: ${OPENAI_BASE_URL:https://api.openai.com/v1}
+    api-key: ${OPENAI_API_KEY:}
+    chat-model: ${OPENAI_CHAT_MODEL:gpt-5-mini}
+    embedding-model: ${OPENAI_EMBEDDING_MODEL:text-embedding-3-small}
+    embedding-dimensions: ${OPENAI_EMBEDDING_DIMENSIONS:512}

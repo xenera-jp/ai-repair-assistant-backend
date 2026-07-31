@@ -1,0 +1,595 @@
+openapi: 3.1.0
+info:
+  title: AI Repair Assistant API
+  version: 0.1.0
+  description: Contract for pre-departure diagnosis, onsite refinement and saved reports.
+  license:
+    name: Proprietary
+    identifier: LicenseRef-Proprietary
+servers:
+  - url: /
+    description: Current backend origin
+security: []
+tags:
+  - name: System
+    description: Runtime and knowledge snapshot status.
+  - name: Problem Understanding
+    description: Natural-language interpretation and information-gap detection.
+  - name: Diagnosis
+    description: Pre-departure diagnosis and onsite refinement.
+  - name: Reports
+    description: User-saved immutable diagnosis reports.
+paths:
+  /api/v1/system/status:
+    get:
+      tags: [System]
+      operationId: getSystemStatus
+      summary: Get service and knowledge snapshot status
+      responses:
+        "200":
+          description: Service configuration status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SystemStatus"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /api/v1/problem-understandings:
+    post:
+      tags: [Problem Understanding]
+      operationId: understandProblem
+      summary: Interpret a maintenance problem
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProblemUnderstandingRequest"
+      responses:
+        "200":
+          description: Structured interpretation and missing information
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProblemUnderstanding"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /api/v1/diagnosis-sessions:
+    post:
+      tags: [Diagnosis]
+      operationId: startDiagnosis
+      summary: Start a pre-departure diagnosis
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StartDiagnosisRequest"
+      responses:
+        "202":
+          description: Diagnosis accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DiagnosisSession"
+        "409":
+          description: Required information is still missing
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+
+  /api/v1/diagnosis-sessions/{sessionId}:
+    get:
+      tags: [Diagnosis]
+      operationId: getDiagnosisSession
+      summary: Get the current diagnosis session
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+      responses:
+        "200":
+          description: Current diagnosis snapshot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DiagnosisSession"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/diagnosis-sessions/{sessionId}/onsite:
+    post:
+      tags: [Diagnosis]
+      operationId: enterOnsiteAnalysis
+      summary: Enter onsite analysis
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+      responses:
+        "200":
+          description: Onsite stage with the next question, if useful
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DiagnosisSession"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/diagnosis-sessions/{sessionId}/questions/{questionId}/responses:
+    post:
+      tags: [Diagnosis]
+      operationId: answerOnsiteQuestion
+      summary: Answer an onsite clarification question
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+        - name: questionId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OnsiteQuestionResponse"
+      responses:
+        "200":
+          description: Reanalyzed diagnosis and next question
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DiagnosisSession"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /api/v1/diagnosis-sessions/{sessionId}/reports:
+    post:
+      tags: [Reports]
+      operationId: saveDiagnosisReport
+      summary: Save an immutable diagnosis report
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+      responses:
+        "201":
+          description: Immutable report version created by explicit user action
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SavedReport"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+components:
+  parameters:
+    SessionId:
+      name: sessionId
+      in: path
+      required: true
+      schema:
+        type: string
+
+  responses:
+    BadRequest:
+      description: Request could not be processed
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/ProblemDetail"
+    ValidationError:
+      description: Request validation failed
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/ProblemDetail"
+    NotFound:
+      description: Resource not found
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/ProblemDetail"
+
+  schemas:
+    AnalysisStage:
+      type: string
+      enum: [PRE_DEPARTURE, ONSITE]
+    SessionStatus:
+      type: string
+      enum:
+        - UNDERSTANDING
+        - NEEDS_INFORMATION
+        - ANALYZING
+        - READY
+        - ONSITE_QUESTIONING
+        - REANALYZING
+        - CONVERGED
+        - PARTIALLY_SUPPORTED
+        - INSUFFICIENT_EVIDENCE
+        - FAILED
+    FieldLevel:
+      type: string
+      enum: [A, B, C]
+    FieldState:
+      type: string
+      enum: [EXTRACTED, CONFIRMED, MISSING, NOT_APPLICABLE]
+    SupportBand:
+      type: string
+      enum: [STRONG_SUPPORT, SUPPORTED, NEEDS_CONFIRMATION]
+    EvidenceType:
+      type: string
+      enum: [REPAIR_CASE, SERVICE_MANUAL, PART_REFERENCE]
+
+    ProblemUnderstandingRequest:
+      type: object
+      required: [stage, language, originalText]
+      properties:
+        stage:
+          $ref: "#/components/schemas/AnalysisStage"
+        language:
+          type: string
+          enum: [zh-CN, ja-JP]
+        originalText:
+          type: string
+          minLength: 3
+          maxLength: 4000
+        inheritedSessionId:
+          type: [string, "null"]
+
+    ProblemUnderstanding:
+      type: object
+      required:
+        - id
+        - originalText
+        - summary
+        - fields
+        - readyForAnalysis
+      properties:
+        id:
+          type: string
+        originalText:
+          type: string
+        summary:
+          type: string
+        primaryProblemType:
+          $ref: "#/components/schemas/ProblemType"
+        fields:
+          type: array
+          items:
+            $ref: "#/components/schemas/UnderstoodField"
+        readyForAnalysis:
+          type: boolean
+        blockingMessage:
+          type: [string, "null"]
+
+    ProblemType:
+      type: object
+      required: [code, label, supportScore]
+      properties:
+        code:
+          type: string
+        label:
+          type: string
+        supportScore:
+          type: number
+          minimum: 0
+          maximum: 100
+
+    UnderstoodField:
+      type: object
+      required: [code, label, level, state, confidence]
+      properties:
+        code:
+          type: string
+        label:
+          type: string
+        value:
+          type: [string, number, boolean, "null"]
+        unit:
+          type: [string, "null"]
+        sourceText:
+          type: [string, "null"]
+        level:
+          $ref: "#/components/schemas/FieldLevel"
+        state:
+          $ref: "#/components/schemas/FieldState"
+        confidence:
+          type: number
+          minimum: 0
+          maximum: 1
+        prompt:
+          type: [string, "null"]
+
+    StartDiagnosisRequest:
+      type: object
+      required: [problemUnderstandingId]
+      properties:
+        problemUnderstandingId:
+          type: string
+        continueWithoutRecommendedFields:
+          type: boolean
+          default: false
+
+    DiagnosisSession:
+      type: object
+      required:
+        - id
+        - stage
+        - status
+        - problemUnderstanding
+        - candidates
+        - evidenceGroups
+        - recommendations
+        - updatedAt
+      properties:
+        id:
+          type: string
+        stage:
+          $ref: "#/components/schemas/AnalysisStage"
+        status:
+          $ref: "#/components/schemas/SessionStatus"
+        progress:
+          $ref: "#/components/schemas/AnalysisProgress"
+        problemUnderstanding:
+          $ref: "#/components/schemas/ProblemUnderstanding"
+        candidates:
+          type: array
+          maxItems: 3
+          items:
+            $ref: "#/components/schemas/DiagnosisCandidate"
+        evidenceGroups:
+          type: array
+          items:
+            $ref: "#/components/schemas/EvidenceGroup"
+        recommendations:
+          $ref: "#/components/schemas/Recommendations"
+        nextQuestion:
+          oneOf:
+            - $ref: "#/components/schemas/OnsiteQuestion"
+            - type: "null"
+        updatedAt:
+          type: string
+          format: date-time
+
+    AnalysisProgress:
+      type: object
+      required: [phase, percent]
+      properties:
+        phase:
+          type: string
+          enum:
+            - UNDERSTANDING_PROBLEM
+            - QUERYING_STRUCTURED_CASES
+            - SEARCHING_SEMANTIC_EVIDENCE
+            - ASSEMBLING_EVIDENCE
+            - GENERATING_EXPLANATION
+        percent:
+          type: integer
+          minimum: 0
+          maximum: 100
+
+    DiagnosisCandidate:
+      type: object
+      required:
+        - code
+        - label
+        - rank
+        - supportScore
+        - supportBand
+        - explanation
+        - evidenceIds
+      properties:
+        code:
+          type: string
+        label:
+          type: string
+        rank:
+          type: integer
+          minimum: 1
+          maximum: 3
+        supportScore:
+          type: number
+          minimum: 40
+          maximum: 100
+        supportBand:
+          $ref: "#/components/schemas/SupportBand"
+        explanation:
+          type: string
+        evidenceIds:
+          type: array
+          minItems: 1
+          items:
+            type: string
+
+    EvidenceGroup:
+      type: object
+      required: [type, label, items]
+      properties:
+        type:
+          $ref: "#/components/schemas/EvidenceType"
+        label:
+          type: string
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/EvidenceItem"
+
+    EvidenceItem:
+      type: object
+      required: [id, title, sourceReference, summary, trustLabel]
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        sourceReference:
+          type: string
+        summary:
+          type: string
+        trustLabel:
+          type: string
+          enum: [AUTHORITATIVE, VERIFIED_CASE, OBSERVED_CASE]
+        matchedSignals:
+          type: array
+          items:
+            type: string
+
+    Recommendations:
+      type: object
+      required: [parts, tools, steps]
+      properties:
+        parts:
+          type: array
+          items:
+            $ref: "#/components/schemas/PartRecommendation"
+        tools:
+          type: array
+          items:
+            $ref: "#/components/schemas/ToolRecommendation"
+        steps:
+          type: array
+          items:
+            $ref: "#/components/schemas/RepairStep"
+
+    PartRecommendation:
+      type: object
+      required: [partNumber, name, preparationLevel, evidenceIds]
+      properties:
+        partNumber:
+          type: string
+        name:
+          type: string
+        preparationLevel:
+          type: string
+          enum: [MUST_PREPARE, RECOMMENDED_PREPARE, CONFIRM_ONSITE]
+        evidenceIds:
+          type: array
+          items:
+            type: string
+
+    ToolRecommendation:
+      type: object
+      required: [code, name]
+      properties:
+        code:
+          type: string
+        name:
+          type: string
+
+    RepairStep:
+      type: object
+      required: [sequence, instruction, sourceLabel, evidenceIds]
+      properties:
+        sequence:
+          type: integer
+        instruction:
+          type: string
+        sourceLabel:
+          type: string
+          enum: [HISTORICAL_ACTION, OFFICIAL_PROCEDURE]
+        evidenceIds:
+          type: array
+          items:
+            type: string
+
+    OnsiteQuestion:
+      type: object
+      required: [id, type, prompt, round, options]
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          enum: [SINGLE_CHOICE, BOOLEAN, MEASUREMENT, TEXT]
+        prompt:
+          type: string
+        round:
+          type: integer
+          minimum: 1
+          maximum: 3
+        unit:
+          type: [string, "null"]
+        options:
+          type: array
+          items:
+            $ref: "#/components/schemas/QuestionOption"
+
+    QuestionOption:
+      type: object
+      required: [code, label]
+      properties:
+        code:
+          type: string
+        label:
+          type: string
+
+    OnsiteQuestionResponse:
+      type: object
+      required: [responseType]
+      properties:
+        responseType:
+          type: string
+          enum: [STANDARD, UNAVAILABLE, SKIPPED, OTHER_TEXT]
+        selectedOptionCode:
+          type: [string, "null"]
+        value:
+          type: [string, number, boolean, "null"]
+        unit:
+          type: [string, "null"]
+
+    SavedReport:
+      type: object
+      required: [reportId, version, sessionId, createdAt]
+      properties:
+        reportId:
+          type: string
+        version:
+          type: integer
+        sessionId:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+
+    SystemStatus:
+      type: object
+      required:
+        - service
+        - status
+        - knowledgeVersion
+        - integrations
+        - timestamp
+      properties:
+        service:
+          type: string
+        status:
+          type: string
+          enum: [UP]
+        knowledgeVersion:
+          type: string
+        integrations:
+          type: object
+          required: [qdrantConfigured, openAiConfigured]
+          properties:
+            qdrantConfigured:
+              type: boolean
+            openAiConfigured:
+              type: boolean
+        timestamp:
+          type: string
+          format: date-time
+
+    ProblemDetail:
+      type: object
+      properties:
+        type:
+          type: string
+          format: uri
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
+        instance:
+          type: string
+          format: uri
