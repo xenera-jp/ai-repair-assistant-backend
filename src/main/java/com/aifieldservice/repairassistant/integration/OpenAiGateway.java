@@ -17,6 +17,13 @@ import com.aifieldservice.repairassistant.config.RepairAssistantProperties;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
+/**
+ * OpenAI API 的防腐层（Anti-corruption Layer）。
+ *
+ * <p>业务服务只调用“生成向量”和“基于证据解释诊断”两个能力，不直接依赖
+ * OpenAI 的 HTTP JSON 格式。外部调用失败时返回空结果，由上层继续使用确定性结果，
+ * 因而 OpenAI 暂时不可用不会破坏 SQL 诊断主链路。
+ */
 @Component
 public class OpenAiGateway {
 
@@ -39,6 +46,7 @@ public class OpenAiGateway {
     }
 
     public boolean enabled() {
+        // 未配置密钥时视为可预期的本地降级模式，不在这里抛异常。
         return properties.openai().apiKey() != null
                 && !properties.openai().apiKey().isBlank();
     }
@@ -49,6 +57,7 @@ public class OpenAiGateway {
         }
 
         try {
+            // dimensions 与 Qdrant collection 建表维度必须一致，否则 upsert 会被拒绝。
             Map<String, Object> body = Map.of(
                     "model", properties.openai().embeddingModel(),
                     "dimensions", properties.openai().embeddingDimensions(),
@@ -65,6 +74,7 @@ public class OpenAiGateway {
                 return List.of();
             }
 
+            // OpenAI 响应通过 index 指回输入位置；按 index 重排可保持批量导入顺序稳定。
             List<float[]> embeddings = new ArrayList<>(
                     Collections.nCopies(inputs.size(), null));
             for (JsonNode item : response.path("data")) {
@@ -79,6 +89,7 @@ public class OpenAiGateway {
                 }
                 embeddings.set(index, values);
             }
+            // 批次中缺少任意一个向量时整体失败，避免把向量错配到其他维修案例。
             return embeddings.stream().allMatch(value -> value != null)
                     ? embeddings
                     : List.of();
@@ -91,34 +102,57 @@ public class OpenAiGateway {
     public Optional<String> explainDiagnosis(
             String question,
             String problemType,
+            String language,
             List<Map<String, Object>> candidates,
             List<Map<String, Object>> evidence) {
         if (!enabled()) {
             return Optional.empty();
         }
 
-        String prompt = """
-                你是企业设备维保诊断助手。仅根据给定的结构化候选和证据，生成一段不超过120字的中文诊断摘要。
-                不得创造部件号、案例编号、测量值或官方结论；证据不足时必须明确写出需要现场确认。
+        // LLM 只负责把已有候选和证据组织成易读解释，不负责召回、创造候选或给分。
+        // 这是限制幻觉和保持可追溯性的关键边界。
+        boolean japanese = "ja-JP".equals(language);
+        String prompt = (japanese
+                ? """
+                        あなたは企業設備の保守診断アシスタントです。与えられた構造化候補と証拠だけを使用し、
+                        120文字以内の簡潔な日本語診断要約を作成してください。部品番号、事例番号、測定値、
+                        公式見解を新たに作ってはいけません。証拠が不足する場合は、現場確認が必要だと明記してください。
 
-                用户问题：
-                %s
+                        ユーザーの質問：
+                        %s
 
-                问题分类：
-                %s
+                        問題分類：
+                        %s
 
-                候选原因：
-                %s
+                        原因候補：
+                        %s
 
-                检索证据：
-                %s
-                """.formatted(
-                        question,
-                        problemType,
-                        writeJson(candidates),
-                        writeJson(evidence));
+                        検索証拠：
+                        %s
+                        """
+                : """
+                        你是企业设备维保诊断助手。仅根据给定的结构化候选和证据，生成一段不超过120字的中文诊断摘要。
+                        不得创造部件号、案例编号、测量值或官方结论；证据不足时必须明确写出需要现场确认。
+
+                        用户问题：
+                        %s
+
+                        问题分类：
+                        %s
+
+                        候选原因：
+                        %s
+
+                        检索证据：
+                        %s
+                        """).formatted(
+                                question,
+                                problemType,
+                                writeJson(candidates),
+                                writeJson(evidence));
 
         try {
+            // store=false 避免把企业维修上下文保存为 OpenAI API 的持久响应对象。
             Map<String, Object> body = Map.of(
                     "model", properties.openai().chatModel(),
                     "store", false,
@@ -141,6 +175,7 @@ public class OpenAiGateway {
                 }
             }
         } catch (RestClientException exception) {
+            // 解释生成失败时，上层保留规则生成的候选解释，不中断诊断。
             log.warn("OpenAI diagnosis explanation failed: {}", exception.getMessage());
         }
         return Optional.empty();

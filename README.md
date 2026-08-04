@@ -64,3 +64,6 @@ RIR1-SSB 冷却效果明显下降，背面发热，显示 E4。设备仍在运�
 - The frontend repository consumes the contract and must not duplicate diagnosis rules.
 
 See [the collaboration workstreams](docs/collaboration/WORKSTREAMS.md).
+
+For the complete server-side execution path, data layers, scoring rules and
+extension points, see [the server implementation guide](docs/SERVER_IMPLEMENTATION_GUIDE.md).

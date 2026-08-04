@@ -38,3 +38,4 @@ build/
 data/*
 !data/knowledge/
 !data/knowledge/*.xlsx
+!data/knowledge/*.pdf

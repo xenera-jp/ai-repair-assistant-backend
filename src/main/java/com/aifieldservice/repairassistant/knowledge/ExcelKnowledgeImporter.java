@@ -47,6 +47,17 @@ import com.aifieldservice.repairassistant.knowledge.ProblemCatalogService.Proble
 
 import tools.jackson.databind.ObjectMapper;
 
+/**
+ * 固定 Excel 知识包的构建流水线。
+ *
+ * <p>输入不是三个互不相关的表，而是一组可通过业务键拼接的事件数据：
+ * 客服受理（受付ID） -> 一次或多次维修到访（作業ID） -> 每次使用的部件（明細ID）。
+ * Importer 同时保留原始行、构建标准维修案例、生成检索投影并写入 Qdrant，
+ * 从而兼顾可追溯性和在线查询效率。
+ *
+ * <p>该类实现 {@link ApplicationRunner}，适合当前“启动时加载固定 Demo 知识库”的范围。
+ * 正式环境应把导入和索引拆成独立批处理任务，并补充批次重试、审核和发布状态机。
+ */
 @Component
 public class ExcelKnowledgeImporter implements ApplicationRunner {
 
@@ -58,6 +69,10 @@ public class ExcelKnowledgeImporter implements ApplicationRunner {
     private static final DateTimeFormatter DATE_FORMAT =
             DateTimeFormatter.ofPattern("yyyy-MM-dd");
 
+    /**
+     * 通过业务列组合识别文件类型，而不是依赖容易变化的文件名。
+     * 只要关键列仍存在，销售或客户重命名文件也不会影响导入。
+     */
     private static final Map<SourceKind, Set<String>> HEADER_FINGERPRINTS = Map.of(
             SourceKind.CALL_HISTORY,
             Set.of("受付ID", "受付日時", "申告内容(応対記録・聞き取り)", "機種", "製造番号"),
@@ -99,6 +114,7 @@ public class ExcelKnowledgeImporter implements ApplicationRunner {
             return;
         }
         try {
+            // V1 在已有案例投影时跳过原始导入，保证重复启动幂等；仍会继续补齐未索引向量。
             int projectionCount = Optional.ofNullable(jdbcTemplate.queryForObject(
                     "SELECT COUNT(*) FROM repair_case_projection_v1",
                     Integer.class)).orElse(0);
@@ -116,6 +132,10 @@ public class ExcelKnowledgeImporter implements ApplicationRunner {
         }
     }
 
+    /**
+     * 一次事务内完成原始文件登记、原始行落库和维修案例构建。
+     * 任何文件结构缺失或业务映射失败都会回滚该批次，避免出现半套知识。
+     */
     @Transactional
     public ImportResult importExcelKnowledge(Path sourcePath) throws Exception {
         List<ParsedFile> files = new ArrayList<>();
@@ -130,6 +150,7 @@ public class ExcelKnowledgeImporter implements ApplicationRunner {
             }
         }
 
+        // 先验证三类数据齐全，再写数据库；部件表虽可为空，但其文件与 schema 必须存在。
         Map<SourceKind, ParsedFile> byKind = new HashMap<>();
         for (ParsedFile file : files) {
             byKind.put(file.kind(), file);
@@ -155,6 +176,7 @@ public class ExcelKnowledgeImporter implements ApplicationRunner {
         ParsedFile repairsFile = byKind.get(SourceKind.REPAIR_HISTORY);
         ParsedFile partsFile = byKind.get(SourceKind.PART_USAGE_HISTORY);
 
+        // 在内存中按业务键建立关联，避免每个维修事件都回查一次数据库。
         Map<String, Map<String, String>> calls = indexBy(callsFile.rows(), "受付ID");
         Map<String, List<Map<String, String>>> repairs = groupBy(
                 repairsFile.rows(),
@@ -169,6 +191,7 @@ public class ExcelKnowledgeImporter implements ApplicationRunner {
             if (call == null) {
                 continue;
             }
+            // 多次到访必须按日期和作业号排序，后续 firstFix/finalResolved 才有业务含义。
             List<Map<String, String>> visits = entry.getValue().stream()
                     .sorted(Comparator
                             .comparing((Map<String, String> value) -> parseDate(
@@ -209,6 +232,7 @@ public class ExcelKnowledgeImporter implements ApplicationRunner {
     }
 
     private ParsedFile parse(Path path) throws Exception {
+        // DataFormatter 读取 Excel 显示值，可避免日期、数字格式在不同单元格类型下表现不一致。
         DataFormatter formatter = new DataFormatter(Locale.JAPAN);
         try (InputStream input = Files.newInputStream(path);
                 Workbook workbook = WorkbookFactory.create(input)) {
@@ -234,6 +258,7 @@ public class ExcelKnowledgeImporter implements ApplicationRunner {
                     hasValue = hasValue || !value.isBlank();
                 }
                 if (hasValue) {
+                    // Excel 行号作为证据追溯坐标保留，前端证据可定位回原始资料。
                     values.put("_sourceRow", String.valueOf(rowIndex + 1));
                     rows.add(values);
                 }
@@ -249,6 +274,7 @@ public class ExcelKnowledgeImporter implements ApplicationRunner {
     }
 
     private Optional<HeaderMatch> findHeader(Sheet sheet, DataFormatter formatter) {
+        // 业务 Excel 常在表头前包含标题或说明，V1 扫描前 10 行寻找真正列头。
         for (int rowIndex = 0; rowIndex <= Math.min(9, sheet.getLastRowNum()); rowIndex++) {
             Row row = sheet.getRow(rowIndex);
             if (row == null) {
@@ -276,6 +302,7 @@ public class ExcelKnowledgeImporter implements ApplicationRunner {
     }
 
     private long ensureKnowledgeBase() {
+        // code 是知识库稳定业务键；ON DUPLICATE KEY 让重复导入保持幂等。
         jdbcTemplate.update("""
                 INSERT INTO knowledge_base (code, name, status)
                 VALUES ('AI_REPAIR_DEMO', 'AI Repair Assistant Demo Knowledge', 'ACTIVE')
@@ -289,6 +316,7 @@ public class ExcelKnowledgeImporter implements ApplicationRunner {
     }
 
     private long createBatch(long knowledgeBaseId, List<ParsedFile> files) {
+        // 批次记录支持后续追踪“哪次导入包含哪些文件以及是否完整完成”。
         String batchKey = UUID.randomUUID().toString();
         jdbcTemplate.update("""
                 INSERT INTO ingestion_batch (
@@ -306,6 +334,7 @@ public class ExcelKnowledgeImporter implements ApplicationRunner {
             long knowledgeBaseId,
             long batchId,
             ParsedFile file) throws Exception {
+        // SHA-256 识别文件内容；同内容换文件名不会重复创建事实来源。
         jdbcTemplate.update("""
                 INSERT INTO source_file (
                     knowledge_base_id, ingestion_batch_id,
@@ -334,6 +363,7 @@ public class ExcelKnowledgeImporter implements ApplicationRunner {
         for (Map<String, String> row : file.rows()) {
             String businessKey = businessKey(file.kind(), row);
             String rawJson = writeJson(row);
+            // source_record 是最原始、不可推断的事实层，保留完整行 JSON 和行级指纹。
             jdbcTemplate.update("""
                     INSERT IGNORE INTO source_record (
                         source_file_id, record_type, business_key,
@@ -360,6 +390,7 @@ public class ExcelKnowledgeImporter implements ApplicationRunner {
             Map<String, String> call,
             List<Map<String, String>> visits,
             List<Map<String, String>> parts) {
+        // 一个 repair case 的独立事件边界是受付ID，而不是每次上门的作業ID。
         Map<String, String> finalVisit = visits.get(visits.size() - 1);
         String receptionId = call.get("受付ID");
         String model = firstNonBlank(
@@ -380,6 +411,7 @@ public class ExcelKnowledgeImporter implements ApplicationRunner {
         String errorCode = extractErrorCodes(visits, call).stream()
                 .findFirst()
                 .orElse("");
+        // 知识构建阶段也使用同一套 taxonomy，保证离线案例标签与在线问题理解一致。
         ProblemMatch problemMatch = problemCatalog
                 .match(model, errorCode, problemText + " " + complaint)
                 .orElseThrow(() -> new IllegalStateException(
@@ -407,6 +439,7 @@ public class ExcelKnowledgeImporter implements ApplicationRunner {
                 .mapToInt(visit -> integer(visit.get("作業時間(分)")))
                 .sum();
 
+        // 将日文 Excel 列名规范化成稳定的内部 JSON 字段，隔离外部资料格式变化。
         List<Map<String, Object>> normalizedParts = parts.stream()
                 .map(part -> {
                     Map<String, Object> value = new LinkedHashMap<>();
@@ -419,6 +452,8 @@ public class ExcelKnowledgeImporter implements ApplicationRunner {
                 .toList();
         List<String> errorCodes = extractErrorCodes(visits, call);
 
+        // 问题投影用于“当前现象找相似案例”；解决投影用于展示原因、处置和部件。
+        // 当前 Qdrant 仅索引 problemProjection，避免答案文本反向污染问题相似度。
         String problemProjection = """
                 型号: %s
                 错误码: %s
@@ -458,6 +493,8 @@ public class ExcelKnowledgeImporter implements ApplicationRunner {
         content.put("firstFix", firstFix);
         content.put("finalResolved", finalResolved);
 
+        // sourceFingerprint 标识原始资料组合，contentFingerprint 标识规范化知识内容。
+        // 二者分开后，未来可判断是来源变化还是知识抽取规则变化。
         String sourceFingerprint = sha256(
                 writeJson(Map.of(
                         "call", call,
@@ -466,6 +503,7 @@ public class ExcelKnowledgeImporter implements ApplicationRunner {
                         .getBytes(StandardCharsets.UTF_8));
         String contentJson = writeJson(content);
         String contentFingerprint = sha256(contentJson.getBytes(StandardCharsets.UTF_8));
+        // 稳定 UUID 确保重复导入同一受付ID时覆盖 Qdrant 中同一个 point。
         String pointId = UUID.nameUUIDFromBytes(
                 ("repair-case:" + receptionId).getBytes(StandardCharsets.UTF_8))
                 .toString();
@@ -476,6 +514,7 @@ public class ExcelKnowledgeImporter implements ApplicationRunner {
                 receptionId);
         String trustLevel = finalResolved ? "VERIFIED_CASE" : "OBSERVED_CASE";
 
+        // knowledge_unit 表示逻辑知识，knowledge_unit_version 表示可发布的不可变版本。
         jdbcTemplate.update("""
                 INSERT INTO knowledge_unit (
                     knowledge_base_id, unit_key, unit_type, current_version_no
@@ -525,6 +564,7 @@ public class ExcelKnowledgeImporter implements ApplicationRunner {
                         .map(visit -> visit.get("_sourceRow"))
                         .reduce((left, right) -> left + "," + right)
                         .orElse(""));
+        // repair_case_projection_v1 是在线诊断读模型，不取代 knowledge_unit/source_record 真相层。
         jdbcTemplate.update("""
                 INSERT INTO repair_case_projection_v1 (
                     knowledge_unit_version_id, reception_id, model,
@@ -581,6 +621,7 @@ public class ExcelKnowledgeImporter implements ApplicationRunner {
                 pointId,
                 trustLevel);
 
+        // 建立知识到每一条原始记录的反向链路，证据详情未来可回放客服、到访和部件明细。
         linkSource(unitVersionId, sourceFileIds.get(SourceKind.CALL_HISTORY),
                 SourceKind.CALL_HISTORY.recordType, receptionId, "PRIMARY");
         for (Map<String, String> visit : visits) {
@@ -633,6 +674,7 @@ public class ExcelKnowledgeImporter implements ApplicationRunner {
             log.info("OpenAI key is not configured; semantic indexing is deferred");
             return;
         }
+        // indexed=false 是 MySQL 与 Qdrant 之间的最终一致性游标。
         List<PendingVector> pending = jdbcTemplate.query("""
                 SELECT id, reception_id, model, problem_type_code,
                        problem_projection, qdrant_point_id
@@ -647,6 +689,7 @@ public class ExcelKnowledgeImporter implements ApplicationRunner {
                 resultSet.getString("problem_projection"),
                 resultSet.getString("qdrant_point_id")));
 
+        // 64 条一批兼顾 API 吞吐和失败重试粒度；失败时保留 indexed=false，下次启动重试。
         for (int offset = 0; offset < pending.size(); offset += 64) {
             List<PendingVector> batch = pending.subList(
                     offset,
@@ -654,6 +697,7 @@ public class ExcelKnowledgeImporter implements ApplicationRunner {
             List<float[]> embeddings = openAiGateway.embed(
                     batch.stream().map(PendingVector::projection).toList());
             if (embeddings.size() != batch.size()) {
+                // 不接受不完整批次，防止向量与 case id 发生位置错配。
                 return;
             }
             List<VectorPoint> points = new ArrayList<>();
@@ -671,6 +715,7 @@ public class ExcelKnowledgeImporter implements ApplicationRunner {
             if (!qdrantGateway.upsert(points)) {
                 return;
             }
+            // 只有 Qdrant wait=true upsert 成功后才推进 MySQL 索引状态。
             jdbcTemplate.update("""
                     UPDATE repair_case_projection_v1
                     SET indexed = TRUE

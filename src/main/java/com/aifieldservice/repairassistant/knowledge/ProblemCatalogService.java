@@ -13,6 +13,12 @@ import org.springframework.stereotype.Service;
 import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.ObjectMapper;
 
+/**
+ * 从 MySQL 中读取领域问题分类，并执行可解释的规则匹配。
+ *
+ * <p>问题类型不是由 LLM 临时创造，而是由 Flyway 中预先审查的 taxonomy 定义。
+ * 这样每个分类都能绑定固定的检索策略、候选原因和现场追问模板。
+ */
 @Service
 public class ProblemCatalogService {
 
@@ -29,6 +35,7 @@ public class ProblemCatalogService {
     }
 
     public List<ProblemTypeDefinition> all() {
+        // 当前数据量很小，V1 直接读取活动 taxonomy；正式版可按 taxonomy version 做缓存。
         return jdbcTemplate.query("""
                 SELECT id, code, name_zh, name_ja, source_labels_json,
                        aliases_json, model_scopes_json, error_codes_json,
@@ -55,6 +62,7 @@ public class ProblemCatalogService {
         String normalizedModel = normalize(model);
         String normalizedError = normalize(errorCode);
 
+        // 低于 35 分视为“没有足够信号”，宁可返回未分类，也不强行匹配一个类别。
         return all().stream()
                 .map(definition -> score(
                         definition,
@@ -79,6 +87,7 @@ public class ProblemCatalogService {
         int score = 0;
         List<String> signals = new ArrayList<>();
 
+        // 型号是适用范围门槛，但仅凭型号不能确定故障类别，所以只给少量支持分。
         if (!model.isBlank()
                 && definition.modelScopes().stream()
                         .map(this::normalize)
@@ -86,6 +95,7 @@ public class ProblemCatalogService {
             score += 12;
             signals.add("型号适配");
         }
+        // 错误码是高辨识度的结构化信号，权重显著高于普通别名。
         if (!errorCode.isBlank()
                 && definition.errorCodes().stream()
                         .map(ErrorCodeDefinition::code)
@@ -94,6 +104,7 @@ public class ProblemCatalogService {
             score += 55;
             signals.add("错误码匹配");
         }
+        // sourceLabels 来自原维修数据中的标准故障模式，命中时最可信。
         for (String label : definition.sourceLabels()) {
             if (contains(text, label)) {
                 score += 70;
@@ -101,6 +112,7 @@ public class ProblemCatalogService {
                 break;
             }
         }
+        // aliases 覆盖客户或工程师的口语描述，只作为语义提示，不替代标准故障模式。
         for (String alias : definition.aliases()) {
             if (contains(text, alias)) {
                 score += 32;
@@ -131,6 +143,7 @@ public class ProblemCatalogService {
         try {
             return objectMapper.readValue(json, STRING_LIST);
         } catch (Exception exception) {
+            // 种子配置异常时单项降级为空列表，避免整个服务因一个可选字段无法启动。
             return List.of();
         }
     }

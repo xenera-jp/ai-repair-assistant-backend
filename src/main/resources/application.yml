@@ -35,6 +35,12 @@ management:
 repair-assistant:
   web:
     allowed-origins:
+      # Vite 的标准端口与本项目演示端口都允许 localhost/127.0.0.1 访问。
+      # 部署到独立前端域名时，再通过 FRONTEND_ORIGIN 追加该域名即可。
+      - http://localhost:5173
+      - http://127.0.0.1:5173
+      - http://localhost:4198
+      - http://127.0.0.1:4198
       - ${FRONTEND_ORIGIN:http://localhost:5173}
   knowledge:
     source-path: ${KNOWLEDGE_SOURCE_PATH:./data/knowledge}
