@@ -12,11 +12,14 @@ import static com.aifieldservice.repairassistant.api.DiagnosisApiModels.PdfSourc
 import static com.aifieldservice.repairassistant.api.DiagnosisApiModels.ProblemUnderstanding;
 import static com.aifieldservice.repairassistant.api.DiagnosisApiModels.QuestionOption;
 import static com.aifieldservice.repairassistant.api.DiagnosisApiModels.Recommendations;
+import static com.aifieldservice.repairassistant.api.DiagnosisApiModels.RejectionRequest;
+import static com.aifieldservice.repairassistant.api.DiagnosisApiModels.OnsiteRediagnosisRequest;
 import static com.aifieldservice.repairassistant.api.DiagnosisApiModels.RepairStep;
 import static com.aifieldservice.repairassistant.api.DiagnosisApiModels.SaveReportRequest;
 import static com.aifieldservice.repairassistant.api.DiagnosisApiModels.SavedReport;
 import static com.aifieldservice.repairassistant.api.DiagnosisApiModels.SourceDocumentLocation;
 import static com.aifieldservice.repairassistant.api.DiagnosisApiModels.StartDiagnosisRequest;
+import static com.aifieldservice.repairassistant.api.DiagnosisApiModels.ProblemUnderstandingRequest;
 import static com.aifieldservice.repairassistant.api.DiagnosisApiModels.ToolRecommendation;
 
 import java.time.Instant;
@@ -35,11 +38,13 @@ import java.util.stream.Collectors;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
 import com.aifieldservice.repairassistant.integration.OpenAiGateway;
 import com.aifieldservice.repairassistant.integration.QdrantGateway;
 import com.aifieldservice.repairassistant.knowledge.ProblemCatalogService;
+import com.aifieldservice.repairassistant.diagnosis.ProblemUnderstandingService;
 
 import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.ObjectMapper;
@@ -132,23 +137,34 @@ public class DiagnosisService {
     private final ProblemCatalogService problemCatalog;
     private final OpenAiGateway openAiGateway;
     private final QdrantGateway qdrantGateway;
+    private final ProblemUnderstandingService problemUnderstandingService;
 
     public DiagnosisService(
             JdbcTemplate jdbcTemplate,
             ObjectMapper objectMapper,
             ProblemCatalogService problemCatalog,
             OpenAiGateway openAiGateway,
-            QdrantGateway qdrantGateway) {
+            QdrantGateway qdrantGateway,
+            ProblemUnderstandingService problemUnderstandingService) {
         this.jdbcTemplate = jdbcTemplate;
         this.objectMapper = objectMapper;
         this.problemCatalog = problemCatalog;
         this.openAiGateway = openAiGateway;
         this.qdrantGateway = qdrantGateway;
+        this.problemUnderstandingService = problemUnderstandingService;
     }
 
     public DiagnosisSession start(StartDiagnosisRequest request) {
         ProblemUnderstanding understanding = loadUnderstanding(
                 request.problemUnderstandingId());
+        return runDiagnosis(understanding, "PRE_DEPARTURE", null, Set.of());
+    }
+
+    private DiagnosisSession runDiagnosis(
+            ProblemUnderstanding understanding,
+            String stage,
+            String parentSessionKey,
+            Set<String> excludedCandidateCodes) {
         boolean japanese = isJapanese(understanding);
 
         // A 类字段缺失时在检索前阻断，避免用不完整上下文产生看似确定的建议。
@@ -229,12 +245,12 @@ public class DiagnosisService {
         }
 
         // 没有合格案例或未识别问题类型时，buildCandidates 返回 0 个候选，不做强制补位。
-        List<DiagnosisCandidate> candidates = buildCandidates(
+        List<DiagnosisCandidate> candidates = excludeCandidates(buildCandidates(
                 understanding,
                 cases,
                 manuals,
                 caseEvidence,
-                manualEvidence);
+                manualEvidence), excludedCandidateCodes);
         if (!candidates.isEmpty()) {
             List<Map<String, Object>> candidatePrompt = candidates.stream()
                     .map(candidate -> Map.<String, Object>of(
@@ -281,19 +297,33 @@ public class DiagnosisService {
                 : caseEvidence.size() + manualEvidence.size() >= 2
                         ? "READY"
                         : "PARTIALLY_SUPPORTED";
+        OnsiteQuestion nextQuestion = "ONSITE".equals(stage) && !candidates.isEmpty()
+                ? nextQuestion(candidates, Set.of(), 1, japanese)
+                : null;
+        if (nextQuestion != null) {
+            status = "ONSITE_QUESTIONING";
+        }
         DiagnosisSession session = new DiagnosisSession(
                 UUID.randomUUID().toString(),
-                "PRE_DEPARTURE",
+                stage,
                 status,
                 new AnalysisProgress("GENERATING_EXPLANATION", 100),
                 understanding,
                 candidates,
                 List.copyOf(evidenceGroups),
                 recommendations,
-                null,
+                nextQuestion,
                 Instant.now());
         // 保存展示快照，使报告、现场派生会话和回看都基于同一版诊断结果。
         insertDiagnosisSnapshot(session);
+        if ("ONSITE".equals(stage) && parentSessionKey != null) {
+            jdbcTemplate.update("""
+                    INSERT INTO onsite_session_state_v1 (
+                        session_key, parent_session_key, current_round,
+                        max_rounds, answered_signals_json
+                    ) VALUES (?, ?, 1, 3, CAST(? AS JSON))
+                    """, session.id(), parentSessionKey, "[]");
+        }
         return session;
     }
 
@@ -368,6 +398,7 @@ public class DiagnosisService {
             String questionId,
             OnsiteQuestionResponseRequest request) {
         DiagnosisSession session = get(sessionId);
+        ensureNotRejected(session);
         if (!"ONSITE".equals(session.stage()) || session.nextQuestion() == null) {
             throw new ResponseStatusException(
                     HttpStatus.CONFLICT,
@@ -452,8 +483,96 @@ public class DiagnosisService {
         return updated;
     }
 
+    @Transactional
+    public ProblemUnderstanding prepareOnsiteRediagnosis(
+            String sessionId,
+            RejectionRequest request) {
+        DiagnosisSession rejected = get(sessionId);
+        if (!"ONSITE".equals(rejected.stage())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Only onsite diagnosis sessions can be rejected.");
+        }
+        ensureNotRejected(rejected);
+        validateRejection(request, rejected);
+        // 整体否定以型号作为唯一继承信息，避免旧描述、错误码等继续影响分类；
+        // 指定候选否定则保留完整原问题，并把现场发现作为后续事实补充。
+        String rediagnosisInput = buildRediagnosisInput(rejected.problemUnderstanding(), request);
+        ProblemUnderstanding understanding = problemUnderstandingService.understand(
+                new ProblemUnderstandingRequest(
+                        "ONSITE",
+                        rejected.problemUnderstanding().language(),
+                        rediagnosisInput,
+                        sessionId));
+        return understanding;
+    }
+
+    @Transactional
+    public DiagnosisSession startOnsiteRediagnosis(
+            String sessionId,
+            OnsiteRediagnosisRequest request) {
+        DiagnosisSession rejected = get(sessionId);
+        RejectionRequest rejection = request.rejection();
+        if (!"ONSITE".equals(rejected.stage())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Only onsite diagnosis sessions can be rejected.");
+        }
+        ensureNotRejected(rejected);
+        validateRejection(rejection, rejected);
+        Integer existing = jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM onsite_rejection_v1 WHERE onsite_session_key = ?
+                """, Integer.class, sessionId);
+        if (existing != null && existing > 0) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "This onsite diagnosis has already been rejected.");
+        }
+
+        ProblemUnderstanding understanding = loadUnderstanding(request.problemUnderstandingId());
+        Set<String> excluded = "CANDIDATES".equals(rejection.scope())
+                ? new LinkedHashSet<>(rejection.rejectedCandidateCodes()) : Set.of();
+        DiagnosisSession rediagnosed = runDiagnosis(understanding, "ONSITE", sessionId, excluded);
+
+        DiagnosisSession terminal = new DiagnosisSession(
+                rejected.id(), rejected.stage(), "REJECTED", rejected.progress(),
+                rejected.problemUnderstanding(), rejected.candidates(), rejected.evidenceGroups(),
+                rejected.recommendations(), null, Instant.now());
+        int changed = jdbcTemplate.update("""
+                UPDATE diagnosis_snapshot_v1
+                SET status = ?, payload_json = CAST(? AS JSON)
+                WHERE session_key = ? AND status <> 'REJECTED'
+                """, terminal.status(), objectMapper.writeValueAsString(terminal), sessionId);
+        if (changed != 1) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "This onsite diagnosis has already been rejected.");
+        }
+        jdbcTemplate.update("""
+                INSERT INTO onsite_rejection_v1 (
+                    onsite_session_key, rejected_session_key, scope,
+                    rejected_candidate_codes, reason_code, reason_text,
+                    onsite_observation, rediagnosed_session_key
+                ) VALUES (?, ?, ?, CAST(? AS JSON), ?, ?, ?, ?)
+                """, sessionId, sessionId, rejection.scope(),
+                objectMapper.writeValueAsString(rejection.rejectedCandidateCodes()),
+                rejection.reasonCode(), safeStrip(rejection.reasonText()).isBlank() ? null : safeStrip(rejection.reasonText()),
+                safeStrip(rejection.onsiteObservation()), rediagnosed.id());
+        return rediagnosed;
+    }
+
+    private String buildRediagnosisInput(
+            ProblemUnderstanding originalUnderstanding,
+            RejectionRequest request) {
+        String observation = safeStrip(request.onsiteObservation());
+        if ("CANDIDATES".equals(request.scope())) {
+            return "原问题内容：\n%s\n\n现场实际发现：\n%s".formatted(
+                    safeStrip(originalUnderstanding.originalText()), observation);
+        }
+
+        String equipmentModel = safeStrip(stringField(originalUnderstanding, "equipmentModel"));
+        return "设备型号：%s\n\n现场实际发现：\n%s".formatted(equipmentModel, observation);
+    }
+
     public SavedReport saveReport(String sessionId, SaveReportRequest request) {
         DiagnosisSession session = get(sessionId);
+        ensureNotRejected(session);
         if (session.candidates().isEmpty()) {
             throw new ResponseStatusException(
                     HttpStatus.CONFLICT,
@@ -937,6 +1056,72 @@ public class DiagnosisService {
 
     private String safeStrip(String value) {
         return value == null ? "" : value.strip();
+    }
+
+    private void ensureNotRejected(DiagnosisSession session) {
+        if ("REJECTED".equals(session.status())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Rejected onsite diagnosis sessions are terminal.");
+        }
+    }
+
+    private void validateRejection(RejectionRequest request, DiagnosisSession session) {
+        if (request == null || !("WHOLE".equals(request.scope())
+                || "CANDIDATES".equals(request.scope()))) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "scope must be WHOLE or CANDIDATES.");
+        }
+        String observation = safeStrip(request.onsiteObservation());
+        if (observation.isBlank() || observation.length() > 4000) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "onsiteObservation is required and must not exceed 4000 characters.");
+        }
+        List<String> codes = request.rejectedCandidateCodes() == null
+                ? List.of() : request.rejectedCandidateCodes();
+        if ("WHOLE".equals(request.scope()) && !codes.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "WHOLE rejection cannot include candidate codes.");
+        }
+        if ("CANDIDATES".equals(request.scope()) && codes.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "CANDIDATES rejection requires at least one candidate code.");
+        }
+        Set<String> supplied = new LinkedHashSet<>(codes);
+        Set<String> available = session.candidates().stream()
+                .map(DiagnosisCandidate::code).collect(Collectors.toSet());
+        if (supplied.size() != codes.size() || !available.containsAll(supplied)) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Rejected candidate codes must be unique current candidates.");
+        }
+        Set<String> validReasons = Set.of("SYMPTOM_MISMATCH", "MEASUREMENT_CONFLICT",
+                "CAUSE_EXCLUDED", "OTHER");
+        if (request.reasonCode() != null && !request.reasonCode().isBlank()
+                && !validReasons.contains(request.reasonCode())) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Invalid rejection reason code.");
+        }
+        if ("OTHER".equals(request.reasonCode()) && safeStrip(request.reasonText()).isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "reasonText is required when reasonCode is OTHER.");
+        }
+    }
+
+    private List<DiagnosisCandidate> excludeCandidates(
+            List<DiagnosisCandidate> candidates, Set<String> excludedCodes) {
+        if (excludedCodes == null || excludedCodes.isEmpty()) {
+            return candidates;
+        }
+        List<DiagnosisCandidate> kept = candidates.stream()
+                .filter(candidate -> !excludedCodes.contains(candidate.code()))
+                .toList();
+        List<DiagnosisCandidate> reranked = new ArrayList<>();
+        for (int index = 0; index < kept.size(); index++) {
+            DiagnosisCandidate candidate = kept.get(index);
+            reranked.add(new DiagnosisCandidate(candidate.code(), candidate.label(), index + 1,
+                    candidate.supportScore(), candidate.supportBand(), candidate.explanation(),
+                    candidate.evidenceIds()));
+        }
+        return List.copyOf(reranked);
     }
 
     /**

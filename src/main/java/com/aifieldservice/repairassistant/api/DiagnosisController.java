@@ -14,6 +14,8 @@ import com.aifieldservice.repairassistant.api.DiagnosisApiModels.DiagnosisSessio
 import com.aifieldservice.repairassistant.api.DiagnosisApiModels.OnsiteQuestionResponseRequest;
 import com.aifieldservice.repairassistant.api.DiagnosisApiModels.ProblemUnderstanding;
 import com.aifieldservice.repairassistant.api.DiagnosisApiModels.ProblemUnderstandingRequest;
+import com.aifieldservice.repairassistant.api.DiagnosisApiModels.OnsiteRediagnosisRequest;
+import com.aifieldservice.repairassistant.api.DiagnosisApiModels.RejectionRequest;
 import com.aifieldservice.repairassistant.api.DiagnosisApiModels.SaveReportRequest;
 import com.aifieldservice.repairassistant.api.DiagnosisApiModels.SavedReport;
 import com.aifieldservice.repairassistant.api.DiagnosisApiModels.StartDiagnosisRequest;
@@ -68,6 +70,20 @@ public class DiagnosisController {
     @PostMapping("/diagnosis-sessions/{sessionId}/onsite")
     public DiagnosisSession enterOnsite(@PathVariable String sessionId) {
         return diagnosisService.enterOnsite(sessionId);
+    }
+
+    @PostMapping("/diagnosis-sessions/{sessionId}/rejections")
+    public ProblemUnderstanding reject(
+            @PathVariable String sessionId,
+            @RequestBody RejectionRequest request) {
+        return diagnosisService.prepareOnsiteRediagnosis(sessionId, request);
+    }
+
+    @PostMapping("/diagnosis-sessions/{sessionId}/reanalysis")
+    public DiagnosisSession startOnsiteRediagnosis(
+            @PathVariable String sessionId,
+            @RequestBody OnsiteRediagnosisRequest request) {
+        return diagnosisService.startOnsiteRediagnosis(sessionId, request);
     }
 
     /** 保存一条现场事实，并用它重新排序当前候选原因。 */

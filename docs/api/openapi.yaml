@@ -115,6 +115,60 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /api/v1/diagnosis-sessions/{sessionId}/rejections:
+    post:
+      tags: [Diagnosis]
+      operationId: prepareOnsiteRediagnosis
+      summary: Prepare an onsite rediagnosis from a rejected diagnosis
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RejectionRequest"
+      responses:
+        "200":
+          description: Reinterpreted onsite problem for user confirmation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProblemUnderstanding"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Session state or rejected candidates conflict
+
+  /api/v1/diagnosis-sessions/{sessionId}/reanalysis:
+    post:
+      tags: [Diagnosis]
+      operationId: startOnsiteRediagnosis
+      summary: Create a replacement onsite session from a confirmed problem understanding
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OnsiteRediagnosisRequest"
+      responses:
+        "200":
+          description: Newly generated onsite diagnosis session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DiagnosisSession"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Session state or rejected candidates conflict
+
   /api/v1/diagnosis-sessions/{sessionId}/questions/{questionId}/responses:
     post:
       tags: [Diagnosis]
@@ -206,6 +260,7 @@ components:
         - PARTIALLY_SUPPORTED
         - INSUFFICIENT_EVIDENCE
         - FAILED
+        - REJECTED
     FieldLevel:
       type: string
       enum: [A, B, C]
@@ -308,6 +363,36 @@ components:
         continueWithoutRecommendedFields:
           type: boolean
           default: false
+
+    RejectionRequest:
+      type: object
+      required: [scope, onsiteObservation]
+      properties:
+        scope:
+          type: string
+          enum: [WHOLE, CANDIDATES]
+        rejectedCandidateCodes:
+          type: array
+          items:
+            type: string
+        reasonCode:
+          type: [string, "null"]
+          enum: [SYMPTOM_MISMATCH, MEASUREMENT_CONFLICT, CAUSE_EXCLUDED, OTHER, null]
+        reasonText:
+          type: [string, "null"]
+        onsiteObservation:
+          type: string
+          minLength: 1
+          maxLength: 4000
+
+    OnsiteRediagnosisRequest:
+      type: object
+      required: [problemUnderstandingId, rejection]
+      properties:
+        problemUnderstandingId:
+          type: string
+        rejection:
+          $ref: "#/components/schemas/RejectionRequest"
 
     DiagnosisSession:
       type: object

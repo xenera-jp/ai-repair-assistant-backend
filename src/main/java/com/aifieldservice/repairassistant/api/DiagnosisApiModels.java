@@ -61,6 +61,19 @@ public final class DiagnosisApiModels {
             boolean continueWithoutRecommendedFields) {
     }
 
+    public record RejectionRequest(
+            String scope,
+            List<String> rejectedCandidateCodes,
+            String reasonCode,
+            String reasonText,
+            String onsiteObservation) {
+    }
+
+    public record OnsiteRediagnosisRequest(
+            String problemUnderstandingId,
+            RejectionRequest rejection) {
+    }
+
     /**
      * 一次可恢复的诊断快照。PRE_DEPARTURE 与 ONSITE 共用同一输出结构，
      * 这样前端可以复用候选、证据和建议组件。
