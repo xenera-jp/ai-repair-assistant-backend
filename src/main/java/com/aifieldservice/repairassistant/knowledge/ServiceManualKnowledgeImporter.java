@@ -25,16 +25,17 @@ import com.aifieldservice.repairassistant.config.RepairAssistantProperties;
 import com.aifieldservice.repairassistant.integration.OpenAiGateway;
 import com.aifieldservice.repairassistant.integration.QdrantGateway;
 import com.aifieldservice.repairassistant.integration.QdrantGateway.VectorPoint;
-import com.aifieldservice.repairassistant.knowledge.RirSsbServiceManualParser.ManualKnowledge;
-import com.aifieldservice.repairassistant.knowledge.RirSsbServiceManualParser.ParsedManual;
+import com.aifieldservice.repairassistant.knowledge.ServiceManualKnowledge.ManualDocument;
+import com.aifieldservice.repairassistant.knowledge.ServiceManualKnowledge.ManualUnit;
 
 import tools.jackson.databind.ObjectMapper;
 
 /**
- * 固定服务手册的离线知识构建入口。
+ * 固定服务手册知识包的离线构建入口。
  *
- * <p>V1 只启用已经审查过的 RIR1-SSB Profile。原始 PDF、页面文本、标准知识对象和
- * 检索投影分别落库，使在线诊断只读取可发布知识，同时仍能回溯到原始 PDF 页。
+ * <p>导入器只调度已经审查过的 Profile。每份 PDF 按 SHA 和 Parser Version 独立判断，
+ * 新增手册不会触发既有手册重复发布。原始页、标准知识对象和检索投影分别落库，
+ * 在线诊断只读取已发布知识，同时仍能回溯到原始 PDF 页和证据坐标。
  */
 @Component
 @Order(20)
@@ -42,13 +43,12 @@ public class ServiceManualKnowledgeImporter implements ApplicationRunner {
 
     private static final Logger log = LoggerFactory.getLogger(ServiceManualKnowledgeImporter.class);
     private static final String KNOWLEDGE_BASE_CODE = "AI_REPAIR_DEMO";
-    private static final String PARSER_VERSION = "PDFBOX_RIR1_SSB_V1";
 
     private final JdbcTemplate jdbcTemplate;
     private final TransactionTemplate transactionTemplate;
     private final ObjectMapper objectMapper;
     private final RepairAssistantProperties properties;
-    private final RirSsbServiceManualParser parser;
+    private final List<ServiceManualParser> parsers;
     private final OpenAiGateway openAiGateway;
     private final QdrantGateway qdrantGateway;
 
@@ -57,14 +57,14 @@ public class ServiceManualKnowledgeImporter implements ApplicationRunner {
             TransactionTemplate transactionTemplate,
             ObjectMapper objectMapper,
             RepairAssistantProperties properties,
-            RirSsbServiceManualParser parser,
+            List<ServiceManualParser> parsers,
             OpenAiGateway openAiGateway,
             QdrantGateway qdrantGateway) {
         this.jdbcTemplate = jdbcTemplate;
         this.transactionTemplate = transactionTemplate;
         this.objectMapper = objectMapper;
         this.properties = properties;
-        this.parser = parser;
+        this.parsers = List.copyOf(parsers);
         this.openAiGateway = openAiGateway;
         this.qdrantGateway = qdrantGateway;
     }
@@ -79,63 +79,102 @@ public class ServiceManualKnowledgeImporter implements ApplicationRunner {
             return;
         }
         try {
-            Optional<Path> source = findSupportedManual(sourceDirectory);
-            if (source.isEmpty()) {
+            List<ManualSource> sources = findSupportedManuals(sourceDirectory);
+            if (sources.isEmpty()) {
                 log.info("No reviewed service manual profile found under {}", sourceDirectory);
                 return;
             }
 
-            int published = Optional.ofNullable(jdbcTemplate.queryForObject(
-                    "SELECT COUNT(*) FROM manual_knowledge_projection_v1",
-                    Integer.class)).orElse(0);
-            int missingSourceLocation = Optional.ofNullable(jdbcTemplate.queryForObject(
-                    "SELECT COUNT(*) FROM manual_knowledge_projection_v1 "
-                            + "WHERE source_quote IS NULL OR source_anchor IS NULL "
-                            + "OR source_region_json IS NULL OR title_ja IS NULL "
-                            + "OR summary_ja IS NULL OR action_steps_ja_json IS NULL",
-                    Integer.class)).orElse(0);
-            if (published == 0 || missingSourceLocation > 0) {
-                ParsedManual manual = parser.parse(source.get());
-                transactionTemplate.executeWithoutResult(status -> importManual(source.get(), manual));
-                log.info(
-                        "Service manual import completed: {} pages, {} knowledge units",
-                        manual.pageCount(),
-                        manual.units().size());
+            for (ManualSource source : sources) {
+                try {
+                    ManualDocument manual = source.parser().parse(source.path());
+                    String fileSha = sha256(Files.readAllBytes(source.path()));
+                    if (!needsImport(fileSha, manual)) {
+                        continue;
+                    }
+                    transactionTemplate.executeWithoutResult(
+                            status -> importManual(source.path(), manual, fileSha));
+                    log.info(
+                            "Service manual import completed: {} ({} pages, {} knowledge units)",
+                            manual.documentName(),
+                            manual.pageCount(),
+                            manual.units().size());
+                } catch (Exception exception) {
+                    // 单份资料失败不应阻止其他知识包和在线服务启动。
+                    log.error("Service manual import failed: {}", source.path(), exception);
+                }
             }
             indexPendingManualKnowledge();
         } catch (Exception exception) {
-            // 固定 Demo 知识包在启动时允许降级，但错误必须完整记录，便于修正资料后重试。
-            log.error("Service manual import failed", exception);
+            log.error("Unable to scan reviewed service manuals", exception);
         }
     }
 
-    private Optional<Path> findSupportedManual(Path sourceDirectory) throws Exception {
+    private List<ManualSource> findSupportedManuals(Path sourceDirectory) throws Exception {
         try (var files = Files.list(sourceDirectory)) {
             return files
                     .filter(Files::isRegularFile)
-                    .filter(parser::supports)
                     .sorted()
-                    .findFirst();
+                    .map(path -> matchParser(path))
+                    .flatMap(Optional::stream)
+                    .toList();
         }
     }
 
-    private void importManual(Path path, ParsedManual manual) {
+    private Optional<ManualSource> matchParser(Path path) {
+        List<ServiceManualParser> matches = parsers.stream()
+                .filter(parser -> parser.supports(path))
+                .toList();
+        if (matches.isEmpty()) {
+            return Optional.empty();
+        }
+        if (matches.size() != 1) {
+            throw new IllegalStateException(
+                    "Service manual must match exactly one profile: " + path);
+        }
+        return Optional.of(new ManualSource(path, matches.get(0)));
+    }
+
+    private boolean needsImport(String fileSha, ManualDocument manual) {
+        Integer published = jdbcTemplate.queryForObject("""
+                SELECT COUNT(DISTINCT mp.id)
+                FROM source_file sf
+                JOIN source_record sr ON sr.source_file_id = sf.id
+                JOIN knowledge_unit_source kus ON kus.source_record_id = sr.id
+                JOIN manual_knowledge_projection_v1 mp
+                  ON mp.knowledge_unit_version_id = kus.knowledge_unit_version_id
+                WHERE sf.knowledge_base_id = (
+                        SELECT id FROM knowledge_base WHERE code = ?)
+                  AND sf.sha256 = ?
+                  AND sf.parser_version = ?
+                  AND sf.status = 'VALIDATED'
+                  AND mp.source_quote IS NOT NULL
+                  AND mp.source_anchor IS NOT NULL
+                  AND mp.source_region_json IS NOT NULL
+                  AND mp.title_ja IS NOT NULL
+                  AND mp.summary_ja IS NOT NULL
+                  AND mp.action_steps_ja_json IS NOT NULL
+                """, Integer.class, KNOWLEDGE_BASE_CODE, fileSha, manual.parserVersion());
+        return Optional.ofNullable(published).orElse(0) < manual.units().size();
+    }
+
+    private void importManual(Path path, ManualDocument manual, String fileSha) {
         try {
             long knowledgeBaseId = ensureKnowledgeBase();
             long batchId = createBatch(knowledgeBaseId);
-            String fileSha = sha256(Files.readAllBytes(path));
             long sourceFileId = registerSourceFile(
                     knowledgeBaseId,
                     batchId,
                     path,
-                    fileSha);
-            long problemTypeId = jdbcTemplate.queryForObject(
-                    "SELECT id FROM problem_type WHERE code = ?",
-                    Long.class,
-                    manual.problemTypeCode());
+                    fileSha,
+                    manual);
 
             Map<Integer, Long> sourcePages = new LinkedHashMap<>();
-            for (ManualKnowledge unit : manual.units()) {
+            for (ManualUnit unit : manual.units()) {
+                long problemTypeId = jdbcTemplate.queryForObject(
+                        "SELECT id FROM problem_type WHERE code = ?",
+                        Long.class,
+                        unit.problemTypeCode());
                 long sourceRecordId = sourcePages.computeIfAbsent(
                         unit.sourcePage().pdfPageIndex(),
                         page -> insertSourcePage(sourceFileId, manual, unit));
@@ -192,27 +231,30 @@ public class ServiceManualKnowledgeImporter implements ApplicationRunner {
             long knowledgeBaseId,
             long batchId,
             Path path,
-            String fileSha) throws Exception {
+            String fileSha,
+            ManualDocument manual) throws Exception {
         jdbcTemplate.update("""
                 INSERT INTO source_file (
                     knowledge_base_id, ingestion_batch_id,
                     logical_document_key, original_file_name,
                     file_type, source_kind, language_code,
                     sha256, file_size_bytes, parser_version, status
-                ) VALUES (?, ?, 'SERVICE_MANUAL:RIR1-SSB', ?,
+                ) VALUES (?, ?, ?, ?,
                           'PDF', 'SERVICE_MANUAL', 'en-US',
                           ?, ?, ?, 'PARSED')
                 ON DUPLICATE KEY UPDATE
                     ingestion_batch_id = VALUES(ingestion_batch_id),
+                    logical_document_key = VALUES(logical_document_key),
                     parser_version = VALUES(parser_version),
                     status = 'PARSED'
                 """,
                 knowledgeBaseId,
                 batchId,
+                manual.logicalDocumentKey(),
                 path.getFileName().toString(),
                 fileSha,
                 Files.size(path),
-                PARSER_VERSION);
+                manual.parserVersion());
         return jdbcTemplate.queryForObject("""
                 SELECT id FROM source_file
                 WHERE knowledge_base_id = ? AND sha256 = ?
@@ -221,8 +263,8 @@ public class ServiceManualKnowledgeImporter implements ApplicationRunner {
 
     private long insertSourcePage(
             long sourceFileId,
-            ParsedManual manual,
-            ManualKnowledge unit) {
+            ManualDocument manual,
+            ManualUnit unit) {
         Map<String, Object> locator = new LinkedHashMap<>();
         locator.put("documentName", manual.documentName());
         locator.put("pdfPageIndex", unit.sourcePage().pdfPageIndex());
@@ -230,7 +272,8 @@ public class ServiceManualKnowledgeImporter implements ApplicationRunner {
         locator.put("sectionPath", unit.sectionPath());
         locator.put("rawText", unit.sourcePage().text());
         String rawJson = writeJson(locator);
-        String businessKey = "RIR1-SSB:SERVICE:PDF_PAGE:" + unit.sourcePage().pdfPageIndex();
+        String businessKey = manual.model() + ":SERVICE:PDF_PAGE:"
+                + unit.sourcePage().pdfPageIndex();
         jdbcTemplate.update("""
                 INSERT INTO source_record (
                     source_file_id, record_type, business_key,
@@ -260,8 +303,8 @@ public class ServiceManualKnowledgeImporter implements ApplicationRunner {
             long knowledgeBaseId,
             long problemTypeId,
             long sourceRecordId,
-            ParsedManual manual,
-            ManualKnowledge unit,
+            ManualDocument manual,
+            ManualUnit unit,
             String fileSha) {
         String pointId = UUID.nameUUIDFromBytes(
                 ("manual:" + unit.unitKey()).getBytes(StandardCharsets.UTF_8))
@@ -269,8 +312,8 @@ public class ServiceManualKnowledgeImporter implements ApplicationRunner {
         Map<String, Object> content = new LinkedHashMap<>();
         content.put("manufacturer", manual.manufacturer());
         content.put("model", manual.model());
-        content.put("problemTypeCode", manual.problemTypeCode());
-        content.put("errorCode", "E4");
+        content.put("problemTypeCode", unit.problemTypeCode());
+        content.put("errorCode", unit.errorCode());
         content.put("interpretations", Map.of(
                 "zh-CN", Map.of(
                         "title", unit.title(),
@@ -369,7 +412,7 @@ public class ServiceManualKnowledgeImporter implements ApplicationRunner {
                     section_path, problem_projection, problem_projection_ja,
                     resolution_projection, resolution_projection_ja,
                     qdrant_point_id, trust_level
-                ) VALUES (?, ?, 'SERVICE_MANUAL', ?, ?, ?, ?, 'E4', ?, ?, ?, ?, ?, ?,
+                ) VALUES (?, ?, 'SERVICE_MANUAL', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                           CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON),
                           CAST(? AS JSON), CAST(? AS JSON), ?, ?, ?, ?, ?, ?, ?, ?, ?,
                           'AUTHORITATIVE')
@@ -395,8 +438,9 @@ public class ServiceManualKnowledgeImporter implements ApplicationRunner {
                 manual.documentName(),
                 manual.manufacturer(),
                 manual.model(),
-                manual.problemTypeCode(),
+                unit.problemTypeCode(),
                 unit.unitType(),
+                unit.errorCode(),
                 unit.title(),
                 unit.titleJa(),
                 unit.summary(),
@@ -520,5 +564,8 @@ public class ServiceManualKnowledgeImporter implements ApplicationRunner {
             String knowledgeType,
             String projection,
             String pointId) {
+    }
+
+    private record ManualSource(Path path, ServiceManualParser parser) {
     }
 }

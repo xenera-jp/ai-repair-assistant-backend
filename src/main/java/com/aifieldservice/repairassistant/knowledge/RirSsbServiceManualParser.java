@@ -14,6 +14,11 @@ import org.apache.pdfbox.text.PDFTextStripper;
 import org.apache.pdfbox.text.TextPosition;
 import org.springframework.stereotype.Component;
 
+import com.aifieldservice.repairassistant.knowledge.ServiceManualKnowledge.ManualDocument;
+import com.aifieldservice.repairassistant.knowledge.ServiceManualKnowledge.ManualUnit;
+import com.aifieldservice.repairassistant.knowledge.ServiceManualKnowledge.PageText;
+import com.aifieldservice.repairassistant.knowledge.ServiceManualKnowledge.SourceRegion;
+
 /**
  * 首个服务手册解析 Profile：Hoshizaki RIR1-SSB service manual。
  *
@@ -22,22 +27,27 @@ import org.springframework.stereotype.Component;
  * 当手册布局或关键语义发生变化时，解析会明确失败，而不是静默生成错误知识。
  */
 @Component
-public class RirSsbServiceManualParser {
+public class RirSsbServiceManualParser implements ServiceManualParser {
 
     private static final String MODEL = "RIR1-SSB";
     private static final String PROBLEM_TYPE = "HIGH_PRESSURE_CONDENSATION";
+    private static final String PARSER_VERSION = "PDFBOX_RIR1_SSB_V2";
     private static final Pattern PRINTED_PAGE = Pattern.compile("(?m)^\\s*(\\d{1,3})\\s*$");
 
+    @Override
     public boolean supports(Path path) {
         String name = path.getFileName().toString().toUpperCase(Locale.ROOT);
-        return name.contains(MODEL) && name.endsWith(".PDF");
+        return name.contains(MODEL)
+                && name.contains("SERVICE MANUAL")
+                && name.endsWith(".PDF");
     }
 
     /**
      * 从原 PDF 中定位三个相互独立、可追溯的 E4 知识单元：
      * 错误定义、官方检查流程和诊断原因表。
      */
-    public ParsedManual parse(Path path) throws IOException {
+    @Override
+    public ManualDocument parse(Path path) throws IOException {
         try (PDDocument document = Loader.loadPDF(path.toFile())) {
             List<PageText> pages = extractPages(document);
             requireDocumentIdentity(pages);
@@ -79,10 +89,12 @@ public class RirSsbServiceManualParser {
                     "REFRIGERANT_CHARGE_OR_CIRCUIT_ABNORMALITY",
                     "HIGH_PRESSURE_SWITCH_ABNORMALITY");
 
-            List<ManualKnowledge> units = List.of(
-                    new ManualKnowledge(
+            List<ManualUnit> units = List.of(
+                    new ManualUnit(
                             "FAULT_DEFINITION:RIR1-SSB:E4",
                             "FAULT_DEFINITION",
+                            PROBLEM_TYPE,
+                            "E4",
                             "RIR1-SSB E4 高压报警定义",
                             "RIR1-SSB E4 高圧警報の定義",
                             "E4 表示压缩机排气压力超出正常范围；高压开关在 1 小时内触发 3 次以上时产生报警，触发 5 次后压缩机停止且不会自动重启。",
@@ -109,9 +121,11 @@ public class RirSsbServiceManualParser {
                             "RIR1-SSB E4 高圧警報、冷却不良、圧縮機高圧保護、High-Pressure Alarm。",
                             "E4 的定义、触发条件和复位规则；后续必须检查冷凝散热、高压回路与高压开关。",
                             "E4 の定義、作動条件、リセット規則。凝縮放熱、高圧回路、高圧スイッチの点検が必要です。"),
-                    new ManualKnowledge(
+                    new ManualUnit(
                             "REPAIR_PROCEDURE:RIR1-SSB:E4:CHECK",
                             "REPAIR_PROCEDURE",
+                            PROBLEM_TYPE,
+                            "E4",
                             "RIR1-SSB E4 官方检查流程",
                             "RIR1-SSB E4 公式点検手順",
                             "官方流程要求先排除过滤网、冷凝器和冷凝风扇问题，再确认控制板提供给高压开关的 5VDC 电源。",
@@ -142,9 +156,11 @@ public class RirSsbServiceManualParser {
                             "RIR1-SSB E4 高圧警報点検、フィルタ目詰まり、凝縮器汚れ、凝縮器ファン停止、高圧スイッチ点検。",
                             "先检查过滤网和冷凝器，再检查冷凝风扇、环境条件、5VDC 控制电源与高压开关。",
                             "フィルタと凝縮器を先に確認し、次に凝縮器ファン、設置条件、5VDC 制御電源、高圧スイッチを点検します。"),
-                    new ManualKnowledge(
+                    new ManualUnit(
                             "REPAIR_PROCEDURE:RIR1-SSB:E4:CAUSES",
                             "REPAIR_PROCEDURE",
+                            PROBLEM_TYPE,
+                            "E4",
                             "RIR1-SSB E4 诊断原因表",
                             "RIR1-SSB E4 原因診断表",
                             "手册将冷凝器脏堵、环境温度过高、冷凝风扇不运行、冷媒过量、管路或部件受限以及接点不良列为 E4 的可能原因。",
@@ -177,11 +193,12 @@ public class RirSsbServiceManualParser {
                             "E4 可能原因及排查顺序：散热和风路优先，其次测量冷媒回路，最后核对高压开关。",
                             "E4 の原因候補と点検順序：放熱と風路を優先し、次に冷媒回路を測定し、最後に高圧スイッチを確認します。"));
 
-            return new ParsedManual(
+            return new ManualDocument(
                     path.getFileName().toString(),
+                    "SERVICE_MANUAL:" + MODEL,
+                    PARSER_VERSION,
                     "Hoshizaki",
                     MODEL,
-                    PROBLEM_TYPE,
                     document.getNumberOfPages(),
                     units);
         }
@@ -339,48 +356,4 @@ public class RirSsbServiceManualParser {
         }
     }
 
-    public record ParsedManual(
-            String documentName,
-            String manufacturer,
-            String model,
-            String problemTypeCode,
-            int pageCount,
-            List<ManualKnowledge> units) {
-    }
-
-    public record PageText(int pdfPageIndex, String printedPageLabel, String text) {
-    }
-
-    /** Top-left PDF coordinates in points, plus the original page dimensions. */
-    public record SourceRegion(
-            double x,
-            double y,
-            double width,
-            double height,
-            double pageWidth,
-            double pageHeight) {
-    }
-
-    public record ManualKnowledge(
-            String unitKey,
-            String unitType,
-            String title,
-            String titleJa,
-            String summary,
-            String summaryJa,
-            String sourceQuote,
-            String sourceAnchor,
-            SourceRegion sourceRegion,
-            List<String> actionSteps,
-            List<String> actionStepsJa,
-            List<String> safetyWarnings,
-            List<String> safetyWarningsJa,
-            List<String> candidateCodes,
-            PageText sourcePage,
-            String sectionPath,
-            String problemProjection,
-            String problemProjectionJa,
-            String resolutionProjection,
-            String resolutionProjectionJa) {
-    }
 }
