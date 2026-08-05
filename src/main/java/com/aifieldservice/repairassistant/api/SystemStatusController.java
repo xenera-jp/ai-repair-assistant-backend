@@ -33,7 +33,8 @@ public class SystemStatusController {
                 new IntegrationStatus(
                         isConfigured(properties.qdrant().url()),
                         isConfigured(properties.openai().apiKey())),
-                Instant.now());
+                Instant.now(),
+                "sayHi");
     }
 
     private boolean isConfigured(String value) {
@@ -45,7 +46,8 @@ public class SystemStatusController {
             String status,
             String knowledgeVersion,
             IntegrationStatus integrations,
-            Instant timestamp) {
+            Instant timestamp,
+            String sayHi) {
     }
 
     public record IntegrationStatus(boolean qdrantConfigured, boolean openAiConfigured) {
