@@ -32,6 +32,15 @@ docker build --pull -t "${IMAGE_NAME}:candidate" "${REPOSITORY_ROOT}"
 docker compose -f "${COMPOSE_FILE}" up -d mysql qdrant
 
 MYSQL_CONTAINER_ID="$(docker compose -f "${COMPOSE_FILE}" ps -q mysql)"
+QDRANT_CONTAINER_ID="$(docker compose -f "${COMPOSE_FILE}" ps -q qdrant)"
+
+# The persistent EC2 compose.yaml may predate the restart policy now committed
+# to the repository. Updating the live containers makes the deployment
+# self-healing immediately without replacing their data-bearing volumes.
+docker update --restart unless-stopped \
+  "${MYSQL_CONTAINER_ID}" \
+  "${QDRANT_CONTAINER_ID}" >/dev/null
+
 NETWORK_NAME="$(docker inspect "${MYSQL_CONTAINER_ID}" \
   --format '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}}{{end}}')"
 
