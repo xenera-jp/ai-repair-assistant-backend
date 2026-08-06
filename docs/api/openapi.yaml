@@ -366,20 +366,8 @@ components:
 
     RejectionRequest:
       type: object
-      required: [scope, onsiteObservation]
+      required: [onsiteObservation]
       properties:
-        scope:
-          type: string
-          enum: [WHOLE, CANDIDATES]
-        rejectedCandidateCodes:
-          type: array
-          items:
-            type: string
-        reasonCode:
-          type: [string, "null"]
-          enum: [SYMPTOM_MISMATCH, MEASUREMENT_CONFLICT, CAUSE_EXCLUDED, OTHER, null]
-        reasonText:
-          type: [string, "null"]
         onsiteObservation:
           type: string
           minLength: 1

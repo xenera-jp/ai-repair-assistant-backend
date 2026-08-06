@@ -41,10 +41,6 @@ class DiagnosisControllerOnsiteReanalysisTests {
     @Test
     void preparesThenStartsOnsiteRediagnosisWithConfirmedUnderstanding() throws Exception {
         RejectionRequest rejection = new RejectionRequest(
-                "CANDIDATES",
-                List.of("DEFROST_HEATER_FAILURE"),
-                "MEASUREMENT_CONFLICT",
-                null,
                 "加热器阻值正常，蒸发器风机未运转。");
         ProblemUnderstanding understanding = understanding("understanding-2");
         DiagnosisSession replacement = replacementSession(understanding);
@@ -58,9 +54,6 @@ class DiagnosisControllerOnsiteReanalysisTests {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {
-                                  "scope": "CANDIDATES",
-                                  "rejectedCandidateCodes": ["DEFROST_HEATER_FAILURE"],
-                                  "reasonCode": "MEASUREMENT_CONFLICT",
                                   "onsiteObservation": "加热器阻值正常，蒸发器风机未运转。"
                                 }
                                 """))
@@ -73,9 +66,6 @@ class DiagnosisControllerOnsiteReanalysisTests {
                                 {
                                   "problemUnderstandingId": "understanding-2",
                                   "rejection": {
-                                    "scope": "CANDIDATES",
-                                    "rejectedCandidateCodes": ["DEFROST_HEATER_FAILURE"],
-                                    "reasonCode": "MEASUREMENT_CONFLICT",
                                     "onsiteObservation": "加热器阻值正常，蒸发器风机未运转。"
                                   }
                                 }

@@ -62,10 +62,6 @@ public final class DiagnosisApiModels {
     }
 
     public record RejectionRequest(
-            String scope,
-            List<String> rejectedCandidateCodes,
-            String reasonCode,
-            String reasonText,
             String onsiteObservation) {
     }
 

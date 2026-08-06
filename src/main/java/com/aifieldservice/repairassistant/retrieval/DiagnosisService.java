@@ -157,14 +157,13 @@ public class DiagnosisService {
     public DiagnosisSession start(StartDiagnosisRequest request) {
         ProblemUnderstanding understanding = loadUnderstanding(
                 request.problemUnderstandingId());
-        return runDiagnosis(understanding, "PRE_DEPARTURE", null, Set.of());
+        return runDiagnosis(understanding, "PRE_DEPARTURE", null);
     }
 
     private DiagnosisSession runDiagnosis(
             ProblemUnderstanding understanding,
             String stage,
-            String parentSessionKey,
-            Set<String> excludedCandidateCodes) {
+            String parentSessionKey) {
         boolean japanese = isJapanese(understanding);
 
         // A 类字段缺失时在检索前阻断，避免用不完整上下文产生看似确定的建议。
@@ -245,12 +244,12 @@ public class DiagnosisService {
         }
 
         // 没有合格案例或未识别问题类型时，buildCandidates 返回 0 个候选，不做强制补位。
-        List<DiagnosisCandidate> candidates = excludeCandidates(buildCandidates(
+        List<DiagnosisCandidate> candidates = buildCandidates(
                 understanding,
                 cases,
                 manuals,
                 caseEvidence,
-                manualEvidence), excludedCandidateCodes);
+                manualEvidence);
         if (!candidates.isEmpty()) {
             List<Map<String, Object>> candidatePrompt = candidates.stream()
                     .map(candidate -> Map.<String, Object>of(
@@ -493,9 +492,8 @@ public class DiagnosisService {
                     "Only onsite diagnosis sessions can be rejected.");
         }
         ensureNotRejected(rejected);
-        validateRejection(request, rejected);
-        // 整体否定以型号作为唯一继承信息，避免旧描述、错误码等继续影响分类；
-        // 指定候选否定则保留完整原问题，并把现场发现作为后续事实补充。
+        validateRejection(request);
+        // 重新分析仅继承设备型号，避免旧描述、错误码等继续影响现场分类。
         String rediagnosisInput = buildRediagnosisInput(rejected.problemUnderstanding(), request);
         ProblemUnderstanding understanding = problemUnderstandingService.understand(
                 new ProblemUnderstandingRequest(
@@ -517,7 +515,7 @@ public class DiagnosisService {
                     "Only onsite diagnosis sessions can be rejected.");
         }
         ensureNotRejected(rejected);
-        validateRejection(rejection, rejected);
+        validateRejection(rejection);
         Integer existing = jdbcTemplate.queryForObject("""
                 SELECT COUNT(*) FROM onsite_rejection_v1 WHERE onsite_session_key = ?
                 """, Integer.class, sessionId);
@@ -527,9 +525,7 @@ public class DiagnosisService {
         }
 
         ProblemUnderstanding understanding = loadUnderstanding(request.problemUnderstandingId());
-        Set<String> excluded = "CANDIDATES".equals(rejection.scope())
-                ? new LinkedHashSet<>(rejection.rejectedCandidateCodes()) : Set.of();
-        DiagnosisSession rediagnosed = runDiagnosis(understanding, "ONSITE", sessionId, excluded);
+        DiagnosisSession rediagnosed = runDiagnosis(understanding, "ONSITE", sessionId);
 
         DiagnosisSession terminal = new DiagnosisSession(
                 rejected.id(), rejected.stage(), "REJECTED", rejected.progress(),
@@ -546,13 +542,10 @@ public class DiagnosisService {
         }
         jdbcTemplate.update("""
                 INSERT INTO onsite_rejection_v1 (
-                    onsite_session_key, rejected_session_key, scope,
-                    rejected_candidate_codes, reason_code, reason_text,
+                    onsite_session_key, rejected_session_key,
                     onsite_observation, rediagnosed_session_key
-                ) VALUES (?, ?, ?, CAST(? AS JSON), ?, ?, ?, ?)
-                """, sessionId, sessionId, rejection.scope(),
-                objectMapper.writeValueAsString(rejection.rejectedCandidateCodes()),
-                rejection.reasonCode(), safeStrip(rejection.reasonText()).isBlank() ? null : safeStrip(rejection.reasonText()),
+                ) VALUES (?, ?, ?, ?)
+                """, sessionId, sessionId,
                 safeStrip(rejection.onsiteObservation()), rediagnosed.id());
         return rediagnosed;
     }
@@ -561,11 +554,6 @@ public class DiagnosisService {
             ProblemUnderstanding originalUnderstanding,
             RejectionRequest request) {
         String observation = safeStrip(request.onsiteObservation());
-        if ("CANDIDATES".equals(request.scope())) {
-            return "原问题内容：\n%s\n\n现场实际发现：\n%s".formatted(
-                    safeStrip(originalUnderstanding.originalText()), observation);
-        }
-
         String equipmentModel = safeStrip(stringField(originalUnderstanding, "equipmentModel"));
         return "设备型号：%s\n\n现场实际发现：\n%s".formatted(equipmentModel, observation);
     }
@@ -1065,63 +1053,16 @@ public class DiagnosisService {
         }
     }
 
-    private void validateRejection(RejectionRequest request, DiagnosisSession session) {
-        if (request == null || !("WHOLE".equals(request.scope())
-                || "CANDIDATES".equals(request.scope()))) {
+    private void validateRejection(RejectionRequest request) {
+        if (request == null) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                    "scope must be WHOLE or CANDIDATES.");
+                    "rejection request is required.");
         }
         String observation = safeStrip(request.onsiteObservation());
         if (observation.isBlank() || observation.length() > 4000) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "onsiteObservation is required and must not exceed 4000 characters.");
         }
-        List<String> codes = request.rejectedCandidateCodes() == null
-                ? List.of() : request.rejectedCandidateCodes();
-        if ("WHOLE".equals(request.scope()) && !codes.isEmpty()) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                    "WHOLE rejection cannot include candidate codes.");
-        }
-        if ("CANDIDATES".equals(request.scope()) && codes.isEmpty()) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                    "CANDIDATES rejection requires at least one candidate code.");
-        }
-        Set<String> supplied = new LinkedHashSet<>(codes);
-        Set<String> available = session.candidates().stream()
-                .map(DiagnosisCandidate::code).collect(Collectors.toSet());
-        if (supplied.size() != codes.size() || !available.containsAll(supplied)) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT,
-                    "Rejected candidate codes must be unique current candidates.");
-        }
-        Set<String> validReasons = Set.of("SYMPTOM_MISMATCH", "MEASUREMENT_CONFLICT",
-                "CAUSE_EXCLUDED", "OTHER");
-        if (request.reasonCode() != null && !request.reasonCode().isBlank()
-                && !validReasons.contains(request.reasonCode())) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                    "Invalid rejection reason code.");
-        }
-        if ("OTHER".equals(request.reasonCode()) && safeStrip(request.reasonText()).isBlank()) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                    "reasonText is required when reasonCode is OTHER.");
-        }
-    }
-
-    private List<DiagnosisCandidate> excludeCandidates(
-            List<DiagnosisCandidate> candidates, Set<String> excludedCodes) {
-        if (excludedCodes == null || excludedCodes.isEmpty()) {
-            return candidates;
-        }
-        List<DiagnosisCandidate> kept = candidates.stream()
-                .filter(candidate -> !excludedCodes.contains(candidate.code()))
-                .toList();
-        List<DiagnosisCandidate> reranked = new ArrayList<>();
-        for (int index = 0; index < kept.size(); index++) {
-            DiagnosisCandidate candidate = kept.get(index);
-            reranked.add(new DiagnosisCandidate(candidate.code(), candidate.label(), index + 1,
-                    candidate.supportScore(), candidate.supportBand(), candidate.explanation(),
-                    candidate.evidenceIds()));
-        }
-        return List.copyOf(reranked);
     }
 
     /**
