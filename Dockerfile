@@ -4,7 +4,11 @@ COPY .mvn .mvn
 COPY mvnw pom.xml ./
 RUN ./mvnw -q -DskipTests dependency:go-offline
 COPY src src
-RUN ./mvnw -q -DskipTests package
+COPY data/knowledge data/knowledge
+
+# The parser tests use the fixed demo knowledge pack. Running them while the
+# image is built prevents a broken Excel/PDF importer from reaching EC2.
+RUN ./mvnw -q test package
 
 FROM eclipse-temurin:21-jre
 WORKDIR /app

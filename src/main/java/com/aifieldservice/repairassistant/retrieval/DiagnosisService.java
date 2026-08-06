@@ -1190,7 +1190,9 @@ public class DiagnosisService {
             String model,
             String problemTypeCode,
             String errorCode) {
-        // 错误码为空时允许返回该问题类型的通用章节；存在错误码时只接受完全一致的章节。
+        // 明确错误码章节优先，同一问题类型的通用诊断章节可作补充。
+        // 这保证 E6 等精确元数据命中不被语义检索结果覆盖，同时让
+        // 没有错误码的官方检查流程仍可被召回。
         return jdbcTemplate.query("""
                 SELECT id, document_name, model, problem_type_code,
                        knowledge_type, error_code, title, title_ja,
@@ -1204,12 +1206,28 @@ public class DiagnosisService {
                 FROM manual_knowledge_projection_v1
                 WHERE model = ?
                   AND problem_type_code = ?
-                  AND (? = '' OR error_code = ?)
+                  AND (
+                      ? = ''
+                      OR error_code = ?
+                      OR error_code IS NULL
+                      OR error_code = ''
+                  )
                 ORDER BY
+                    CASE
+                        WHEN ? <> '' AND error_code = ? THEN 0
+                        WHEN error_code IS NULL OR error_code = '' THEN 1
+                        ELSE 2
+                    END,
                     CASE knowledge_type WHEN 'FAULT_DEFINITION' THEN 0 ELSE 1 END,
                     pdf_page_index, id
                 LIMIT 6
-                """, this::mapManual, model, problemTypeCode, errorCode, errorCode);
+                """, this::mapManual,
+                model,
+                problemTypeCode,
+                errorCode,
+                errorCode,
+                errorCode,
+                errorCode);
     }
 
     private List<RetrievedManual> retrieveManualByIds(List<Long> ids) {

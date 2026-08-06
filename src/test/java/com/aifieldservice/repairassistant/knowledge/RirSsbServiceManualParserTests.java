@@ -6,8 +6,8 @@ import java.nio.file.Path;
 
 import org.junit.jupiter.api.Test;
 
-import com.aifieldservice.repairassistant.knowledge.RirSsbServiceManualParser.ManualKnowledge;
-import com.aifieldservice.repairassistant.knowledge.RirSsbServiceManualParser.ParsedManual;
+import com.aifieldservice.repairassistant.knowledge.ServiceManualKnowledge.ManualDocument;
+import com.aifieldservice.repairassistant.knowledge.ServiceManualKnowledge.ManualUnit;
 
 class RirSsbServiceManualParserTests {
 
@@ -20,14 +20,15 @@ class RirSsbServiceManualParserTests {
 
     @Test
     void extractsReviewedE4KnowledgeUnitsWithSourceLocations() throws Exception {
-        ParsedManual manual = parser.parse(MANUAL);
+        ManualDocument manual = parser.parse(MANUAL);
 
         assertThat(manual.model()).isEqualTo("RIR1-SSB");
-        assertThat(manual.problemTypeCode()).isEqualTo("HIGH_PRESSURE_CONDENSATION");
         assertThat(manual.pageCount()).isEqualTo(106);
         assertThat(manual.units()).hasSize(3);
 
-        ManualKnowledge definition = unit(manual, "FAULT_DEFINITION:RIR1-SSB:E4");
+        ManualUnit definition = unit(manual, "FAULT_DEFINITION:RIR1-SSB:E4");
+        assertThat(definition.problemTypeCode()).isEqualTo("HIGH_PRESSURE_CONDENSATION");
+        assertThat(definition.errorCode()).isEqualTo("E4");
         assertThat(definition.sourcePage().pdfPageIndex()).isEqualTo(36);
         assertThat(definition.sourcePage().printedPageLabel()).isEqualTo("31");
         assertThat(definition.summary()).contains("1 小时内触发 3 次", "5 次后压缩机停止");
@@ -37,7 +38,7 @@ class RirSsbServiceManualParserTests {
         assertThat(definition.sourceRegion().x()).isBetween(187.0, 190.0);
         assertThat(definition.sourceRegion().y()).isBetween(496.0, 498.0);
 
-        ManualKnowledge procedure = unit(manual, "REPAIR_PROCEDURE:RIR1-SSB:E4:CHECK");
+        ManualUnit procedure = unit(manual, "REPAIR_PROCEDURE:RIR1-SSB:E4:CHECK");
         assertThat(procedure.sourcePage().pdfPageIndex()).isEqualTo(59);
         assertThat(procedure.sourcePage().printedPageLabel()).isEqualTo("54");
         assertThat(procedure.sourceRegion()).isNotNull();
@@ -45,7 +46,7 @@ class RirSsbServiceManualParserTests {
                 "检查空气过滤网和冷凝器是否清洁、是否存在堵塞。",
                 "检查控制板 K6-6 与 K5-2 之间是否有 5VDC；缺失时检查控制板。");
 
-        ManualKnowledge causes = unit(manual, "REPAIR_PROCEDURE:RIR1-SSB:E4:CAUSES");
+        ManualUnit causes = unit(manual, "REPAIR_PROCEDURE:RIR1-SSB:E4:CAUSES");
         assertThat(causes.sourcePage().pdfPageIndex()).isEqualTo(60);
         assertThat(causes.sourcePage().printedPageLabel()).isEqualTo("55");
         assertThat(causes.sourceRegion()).isNotNull();
@@ -55,7 +56,7 @@ class RirSsbServiceManualParserTests {
                 "HIGH_PRESSURE_SWITCH_ABNORMALITY");
     }
 
-    private ManualKnowledge unit(ParsedManual manual, String key) {
+    private ManualUnit unit(ManualDocument manual, String key) {
         return manual.units().stream()
                 .filter(item -> item.unitKey().equals(key))
                 .findFirst()

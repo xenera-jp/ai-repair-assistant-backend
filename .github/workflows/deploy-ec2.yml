@@ -1,0 +1,29 @@
+name: Deploy backend to EC2
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ai-repair-backend-ec2
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build and deploy backend
+    runs-on: [self-hosted, Linux, X64, backend]
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Build, replace, and verify backend
+        env:
+          DEPLOY_ROOT: /home/ec2-user/app/ai-repair-assistant-backend
+        run: ./deploy/ec2/deploy-backend.sh
