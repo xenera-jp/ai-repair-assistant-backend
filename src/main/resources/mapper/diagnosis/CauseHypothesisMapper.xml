@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.aifieldservice.repairassistant.dao.diagnosis.CauseHypothesisMapper">
+    <select id="findClarificationQuestionsJson" resultType="string">
+        SELECT clarification_questions_json FROM cause_hypothesis WHERE code = #{code} LIMIT 1
+    </select>
+    <select id="findByProblemTypeCode" resultType="com.aifieldservice.repairassistant.domain.diagnosis.model.CauseHypothesis">
+        SELECT ch.code, ch.name_zh, ch.name_ja, ch.default_rank
+        FROM cause_hypothesis ch JOIN problem_type pt ON pt.id = ch.problem_type_id
+        WHERE pt.code = #{problemTypeCode} ORDER BY ch.default_rank, ch.id
+    </select>
+</mapper>

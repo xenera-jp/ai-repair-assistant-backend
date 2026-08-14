@@ -4,6 +4,8 @@ import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
 
+import org.mybatis.spring.annotation.MapperScan;
+
 /**
  * AI 维修助手服务端启动入口。
  *
@@ -13,6 +15,7 @@ import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
  */
 @SpringBootApplication
 @ConfigurationPropertiesScan
+@MapperScan("com.aifieldservice.repairassistant.dao")
 public class AiRepairAssistantBackendApplication {
 
 	public static void main(String[] args) {

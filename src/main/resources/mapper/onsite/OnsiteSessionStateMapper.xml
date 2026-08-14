@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.aifieldservice.repairassistant.dao.onsite.OnsiteSessionStateMapper">
+    <insert id="insert">
+        INSERT INTO onsite_session_state_v1 (session_key, parent_session_key, current_round, max_rounds, answered_signals_json)
+        VALUES (#{sessionKey}, #{parentSessionKey}, #{currentRound}, #{maxRounds}, CAST(#{answeredSignalsJson} AS JSON))
+    </insert>
+    <select id="findLatestSessionKeyByParent" resultType="string">
+        SELECT session_key FROM onsite_session_state_v1
+        WHERE parent_session_key = #{parentSessionKey}
+        ORDER BY created_at DESC LIMIT 1
+    </select>
+    <select id="findBySessionKey" resultType="com.aifieldservice.repairassistant.domain.onsite.model.OnsiteSessionStateRecord">
+        SELECT current_round, max_rounds, answered_signals_json
+        FROM onsite_session_state_v1 WHERE session_key = #{sessionKey}
+    </select>
+    <update id="updateProgress">
+        UPDATE onsite_session_state_v1
+        SET current_round = #{currentRound}, answered_signals_json = CAST(#{answeredSignalsJson} AS JSON)
+        WHERE session_key = #{sessionKey}
+    </update>
+</mapper>

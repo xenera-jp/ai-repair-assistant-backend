@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.aifieldservice.repairassistant.dao.diagnosis.ProblemUnderstandingMapper">
+    <insert id="insert">
+        INSERT INTO problem_understanding_snapshot_v1 (
+            understanding_key, stage, language_code, original_text,
+            primary_problem_type_code, ready_for_analysis, payload_json
+        ) VALUES (
+            #{understandingKey}, #{stage}, #{languageCode}, #{originalText},
+            #{problemTypeCode}, #{readyForAnalysis}, CAST(#{payloadJson} AS JSON)
+        )
+    </insert>
+
+    <select id="findPayloadByUnderstandingKey" resultType="string">
+        SELECT payload_json
+        FROM problem_understanding_snapshot_v1
+        WHERE understanding_key = #{understandingKey}
+    </select>
+</mapper>

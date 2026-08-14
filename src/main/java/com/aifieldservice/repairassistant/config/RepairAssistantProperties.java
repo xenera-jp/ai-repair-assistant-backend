@@ -15,7 +15,8 @@ public record RepairAssistantProperties(
         Web web,
         Knowledge knowledge,
         Qdrant qdrant,
-        OpenAi openai) {
+        OpenAi openai,
+        ProblemUnderstanding problemUnderstanding) {
 
     /** 前端可访问 API 的来源白名单。 */
     public record Web(List<String> allowedOrigins) {
@@ -39,5 +40,14 @@ public record RepairAssistantProperties(
             String chatModel,
             String embeddingModel,
             int embeddingDimensions) {
+    }
+
+    /** 问题理解中规则和语义兜底的可运营阈值。 */
+    public record ProblemUnderstanding(
+            boolean semanticFallbackEnabled,
+            int ruleClassificationAcceptScore,
+            int ruleClassificationMinScoreGap,
+            double llmClassificationAcceptScore,
+            boolean llmFieldCompletionAfterClassificationEnabled) {
     }
 }

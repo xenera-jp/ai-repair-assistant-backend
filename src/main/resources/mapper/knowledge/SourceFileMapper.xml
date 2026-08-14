@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.aifieldservice.repairassistant.dao.knowledge.SourceFileMapper">
+    <insert id="upsert">
+        INSERT INTO source_file (knowledge_base_id, ingestion_batch_id, logical_document_key,
+            original_file_name, file_type, source_kind, language_code, sha256,
+            file_size_bytes, parser_version, status)
+        VALUES (#{knowledgeBaseId}, #{ingestionBatchId}, #{logicalDocumentKey},
+            #{originalFileName}, #{fileType}, #{sourceKind}, #{languageCode}, #{sha256},
+            #{fileSizeBytes}, #{parserVersion}, 'PARSED')
+        ON DUPLICATE KEY UPDATE
+            ingestion_batch_id = IF(#{refreshRegistration}, VALUES(ingestion_batch_id), ingestion_batch_id),
+            logical_document_key = IF(#{refreshRegistration}, VALUES(logical_document_key), logical_document_key),
+            parser_version = VALUES(parser_version), status = 'PARSED'
+    </insert>
+    <select id="findIdByKnowledgeBaseAndSha" resultType="long">
+        SELECT id FROM source_file WHERE knowledge_base_id = #{knowledgeBaseId} AND sha256 = #{sha256}
+    </select>
+    <update id="markValidated">UPDATE source_file SET status = 'VALIDATED' WHERE id = #{sourceFileId}</update>
+    <update id="markBatchValidated">UPDATE source_file SET status = 'VALIDATED' WHERE ingestion_batch_id = #{batchId}</update>
+</mapper>
