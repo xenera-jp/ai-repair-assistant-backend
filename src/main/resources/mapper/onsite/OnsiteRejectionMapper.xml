@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.aifieldservice.repairassistant.dao.onsite.OnsiteRejectionMapper">
+    <select id="countByOnsiteSessionKey" resultType="int">
+        SELECT COUNT(*) FROM onsite_rejection_v1 WHERE onsite_session_key = #{onsiteSessionKey}
+    </select>
+    <insert id="insert">
+        INSERT INTO onsite_rejection_v1 (onsite_session_key, rejected_session_key, onsite_observation, rediagnosed_session_key)
+        VALUES (#{onsiteSessionKey}, #{rejectedSessionKey}, #{onsiteObservation}, #{rediagnosedSessionKey})
+    </insert>
+</mapper>

@@ -9,14 +9,16 @@ spring:
     url: ${MYSQL_URL:jdbc:mysql://localhost:3307/ai_repair_assistant?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai}
     username: ${MYSQL_USER:repair_assistant}
     password: ${MYSQL_PASSWORD:repair_assistant}
-  jpa:
-    open-in-view: false
-    hibernate:
-      ddl-auto: validate
   flyway:
     enabled: true
     locations: classpath:db/migration
     validate-migration-naming: true
+
+mybatis:
+  mapper-locations: classpath*:mapper/**/*.xml
+  configuration:
+    map-underscore-to-camel-case: true
+    jdbc-type-for-null: 'NULL'
 
 server:
   port: ${SERVER_PORT:8080}
@@ -56,3 +58,11 @@ repair-assistant:
     chat-model: ${OPENAI_CHAT_MODEL:gpt-5-mini}
     embedding-model: ${OPENAI_EMBEDDING_MODEL:text-embedding-3-small}
     embedding-dimensions: ${OPENAI_EMBEDDING_DIMENSIONS:512}
+  problem-understanding:
+    semantic-fallback-enabled: ${SEMANTIC_FALLBACK_ENABLED:true}
+    # 规则候选已过滤 <35 的弱信号；达到 35 即可进入 AI 分析且不调用 LLM。
+    rule-classification-accept-score: ${RULE_CLASSIFICATION_ACCEPT_SCORE:35}
+    rule-classification-min-score-gap: ${RULE_CLASSIFICATION_MIN_SCORE_GAP:15}
+    llm-classification-accept-score: ${LLM_CLASSIFICATION_ACCEPT_SCORE:0.0}
+    # 保留兼容配置；当前实现仅在规则未达到阈值时调用 LLM。
+    llm-field-completion-after-classification-enabled: ${LLM_FIELD_COMPLETION_AFTER_CLASSIFICATION_ENABLED:false}

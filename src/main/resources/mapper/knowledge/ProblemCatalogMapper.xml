@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.aifieldservice.repairassistant.dao.knowledge.ProblemCatalogMapper">
+    <select id="findAllActive" resultType="com.aifieldservice.repairassistant.domain.knowledge.model.ProblemTypeRecord">
+        SELECT id, code, name_zh, name_ja, source_labels_json,
+               aliases_json, model_scopes_json, error_codes_json,
+               clarification_schema_json
+        FROM problem_type
+        ORDER BY implementation_priority, id
+    </select>
+</mapper>

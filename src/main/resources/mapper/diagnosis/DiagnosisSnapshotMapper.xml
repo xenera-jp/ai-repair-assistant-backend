@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.aifieldservice.repairassistant.dao.diagnosis.DiagnosisSnapshotMapper">
+    <insert id="insert">
+        INSERT INTO diagnosis_snapshot_v1 (session_key, understanding_key, stage, status, payload_json)
+        VALUES (#{sessionKey}, #{understandingKey}, #{stage}, #{status}, CAST(#{payloadJson} AS JSON))
+    </insert>
+    <update id="update">
+        UPDATE diagnosis_snapshot_v1
+        SET stage = #{stage}, status = #{status}, payload_json = CAST(#{payloadJson} AS JSON)
+        WHERE session_key = #{sessionKey}
+    </update>
+    <select id="findPayloadBySessionKey" resultType="string">
+        SELECT payload_json FROM diagnosis_snapshot_v1 WHERE session_key = #{sessionKey}
+    </select>
+    <update id="rejectIfActive">
+        UPDATE diagnosis_snapshot_v1
+        SET status = #{status}, payload_json = CAST(#{payloadJson} AS JSON)
+        WHERE session_key = #{sessionKey} AND status &lt;&gt; 'REJECTED'
+    </update>
+</mapper>

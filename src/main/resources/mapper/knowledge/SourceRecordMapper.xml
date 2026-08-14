@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.aifieldservice.repairassistant.dao.knowledge.SourceRecordMapper">
+ <insert id="insertExcelRow">INSERT IGNORE INTO source_record (source_file_id,record_type,business_key,sheet_name,source_row_no,raw_payload,record_fingerprint,validation_status) VALUES (#{sourceFileId},#{recordType},#{businessKey},#{sheetName},#{sourceRowNo},CAST(#{rawPayload} AS JSON),#{fingerprint},'VALID')</insert>
+ <select id="findFirstId" resultType="long">SELECT id FROM source_record WHERE source_file_id=#{sourceFileId} AND record_type=#{recordType} AND business_key=#{businessKey} LIMIT 1</select>
+</mapper>

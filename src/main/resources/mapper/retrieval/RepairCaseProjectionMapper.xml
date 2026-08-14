@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.aifieldservice.repairassistant.dao.retrieval.RepairCaseProjectionMapper">
+    <sql id="Columns">reception_id, model, problem_type_code, problem_type_label, error_codes_json, complaint, onsite_observation, cause_text, action_text, final_resolved, first_fix, visit_count, total_duration_minutes, parts_json, source_reference, trust_level</sql>
+    <select id="findResolvedCases" resultType="com.aifieldservice.repairassistant.domain.retrieval.model.RepairCaseProjection">
+        SELECT <include refid="Columns"/> FROM repair_case_projection_v1
+        WHERE model = #{model} AND problem_type_code = #{problemTypeCode} AND final_resolved = TRUE
+        ORDER BY first_fix DESC, received_at DESC, reception_id LIMIT 8
+    </select>
+    <select id="findByReceptionIds" resultType="com.aifieldservice.repairassistant.domain.retrieval.model.RepairCaseProjection">
+        SELECT <include refid="Columns"/> FROM repair_case_projection_v1
+        WHERE reception_id IN
+        <foreach collection="receptionIds" item="id" open="(" separator="," close=")">#{id}</foreach>
+        AND final_resolved = TRUE
+    </select>
+</mapper>

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.aifieldservice.repairassistant.dao.knowledge.IngestionBatchMapper">
+    <insert id="insert">
+        INSERT INTO ingestion_batch (knowledge_base_id, batch_key, status, total_files, started_at)
+        VALUES (#{knowledgeBaseId}, #{batchKey}, 'PROCESSING', #{totalFiles}, CURRENT_TIMESTAMP(3))
+    </insert>
+    <select id="findIdByBatchKey" resultType="long">
+        SELECT id FROM ingestion_batch WHERE batch_key = #{batchKey}
+    </select>
+    <update id="complete">
+        UPDATE ingestion_batch
+        SET status = 'COMPLETED', total_records = #{totalRecords}, completed_at = CURRENT_TIMESTAMP(3)
+        WHERE id = #{batchId}
+    </update>
+</mapper>

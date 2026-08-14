@@ -5,9 +5,6 @@ spring:
     password:
   flyway:
     enabled: false
-  jpa:
-    hibernate:
-      ddl-auto: none
 
 repair-assistant:
   web:
@@ -16,6 +13,7 @@ repair-assistant:
   knowledge:
     source-path: /private/tmp/repair-assistant-test-knowledge
     version: test-v1
+    import-enabled: false
   qdrant:
     url: http://localhost:6333
     api-key:
@@ -26,3 +24,9 @@ repair-assistant:
     chat-model: test-chat-model
     embedding-model: test-embedding-model
     embedding-dimensions: 512
+  problem-understanding:
+    semantic-fallback-enabled: true
+    rule-classification-accept-score: 35
+    rule-classification-min-score-gap: 15
+    llm-classification-accept-score: 0.0
+    llm-field-completion-after-classification-enabled: false

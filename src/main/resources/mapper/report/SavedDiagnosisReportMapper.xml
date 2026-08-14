@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.aifieldservice.repairassistant.dao.report.SavedDiagnosisReportMapper">
+    <sql id="ReportColumns">report_key, session_key, report_name, note, stage, diagnosis_status, snapshot_json, created_at</sql>
+    <insert id="insert">
+        INSERT INTO saved_diagnosis_report_v1 (report_key, session_key, report_name, note, stage, diagnosis_status, snapshot_json)
+        VALUES (#{reportKey}, #{sessionKey}, #{reportName}, #{note}, #{stage}, #{diagnosisStatus}, CAST(#{snapshotJson} AS JSON))
+    </insert>
+    <select id="findAll" resultType="com.aifieldservice.repairassistant.domain.report.model.SavedDiagnosisReport">
+        SELECT <include refid="ReportColumns"/> FROM saved_diagnosis_report_v1 ORDER BY created_at DESC
+    </select>
+    <select id="findByReportKey" resultType="com.aifieldservice.repairassistant.domain.report.model.SavedDiagnosisReport">
+        SELECT <include refid="ReportColumns"/> FROM saved_diagnosis_report_v1 WHERE report_key = #{reportKey}
+    </select>
+    <select id="findBySessionKey" resultType="com.aifieldservice.repairassistant.domain.report.model.SavedDiagnosisReport">
+        SELECT <include refid="ReportColumns"/> FROM saved_diagnosis_report_v1 WHERE session_key = #{sessionKey}
+    </select>
+</mapper>
