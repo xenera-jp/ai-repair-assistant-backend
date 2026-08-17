@@ -21,6 +21,10 @@ public class SemanticUnderstandingValidator {
     private static final Logger log = LoggerFactory.getLogger(SemanticUnderstandingValidator.class);
     private static final Set<String> ALLOWED_FIELDS = Set.of(
             "errorCode", "operatingState", "occurrence", "measurement", "environment", "recentChanges");
+    private static final Set<String> UNAVAILABLE_FIELD_VALUES = Set.of(
+            "无可用测量数据", "无测量数据", "无环境信息", "无可用环境信息", "暂无测量数据", "暂无环境信息",
+            "未提供测量数据", "未提供环境信息", "没有测量数据", "没有环境信息",
+            "測定値なし", "測定値情報なし", "設置環境情報なし", "環境情報なし");
     private static final double DEFAULT_CLASSIFICATION_CONFIDENCE = 0.70;
 
     private final RepairAssistantProperties properties;
@@ -110,6 +114,15 @@ public class SemanticUnderstandingValidator {
                 || field.evidence().length() > 300) {
             return false;
         }
-        return field.value() != null && !field.value().isBlank() && field.value().length() <= 200;
+        return field.value() != null && !field.value().isBlank() && field.value().length() <= 200
+                // These phrases describe an absent source value, not a fact extracted from it.
+                // Reject them so the original MISSING state is preserved and the UI shows the
+                // standard "尚未补充 / 未入力" placeholder.
+                && !isUnavailableFieldValue(field.value());
+    }
+
+    private boolean isUnavailableFieldValue(String value) {
+        String normalized = value.strip().replaceAll("\\s+", "");
+        return UNAVAILABLE_FIELD_VALUES.contains(normalized);
     }
 }
