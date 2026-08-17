@@ -48,6 +48,18 @@ class SemanticUnderstandingValidatorTests {
     }
 
     @Test
+    void rejectsUnavailableValuePlaceholdersSoFieldsRemainMissing() {
+        SemanticProblemUnderstandingResponse response = new SemanticProblemUnderstandingResponse(
+                "DEFROST_FAILURE_FROST", 0.90, "reason",
+                Map.of(
+                        "measurement", new SemanticField("无可用测量数据", "PRESENT", 0.90, "原文未提供测量值"),
+                        "environment", new SemanticField("无环境信息", "PRESENT", 0.90, "原文未提供环境信息")));
+
+        assertThat(validator.validate(response, "蒸发器除霜不完全", List.of(taxonomy())).orElseThrow().fields())
+                .doesNotContainKeys("measurement", "environment");
+    }
+
+    @Test
     void keepsValidClassificationWhenSomeSupplementalFieldsAreInvalid() {
         SemanticProblemUnderstandingResponse response = new SemanticProblemUnderstandingResponse(
                 "defrost_failure_frost", 0.52, "霜が残るため除霜異常に近い",
