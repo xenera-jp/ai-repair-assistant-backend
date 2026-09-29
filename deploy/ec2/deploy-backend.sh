@@ -13,6 +13,7 @@ ENV_FILE="${APP_ENV_FILE:-${DEPLOY_ROOT}/.env.local}"
 COMPOSE_FILE="${DEPLOY_ROOT}/compose.yaml"
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8080/actuator/health}"
 STATUS_URL="${STATUS_URL:-http://127.0.0.1:8080/api/v1/system/status}"
+RECORDING_HOST_PATH="${RECORDING_HOST_PATH:-/opt/ai-repair-assistant/data/recordings}"
 
 if [[ ! -f "${ENV_FILE}" ]]; then
   echo "Required secret environment file is missing: ${ENV_FILE}" >&2
@@ -23,6 +24,9 @@ if [[ ! -f "${COMPOSE_FILE}" ]]; then
   echo "Required infrastructure Compose file is missing: ${COMPOSE_FILE}" >&2
   exit 1
 fi
+
+# Recordings must live on the persistent EC2 filesystem, never in the container layer.
+sudo install -d -m 0750 "${RECORDING_HOST_PATH}"
 
 echo "Building backend candidate image..."
 docker build --pull -t "${IMAGE_NAME}:candidate" "${REPOSITORY_ROOT}"
@@ -82,6 +86,8 @@ start_backend() {
     -e QDRANT_COLLECTION=ai_repair_knowledge_v1 \
     -e KNOWLEDGE_SOURCE_PATH=/app/data/knowledge \
     -e KNOWLEDGE_IMPORT_ENABLED=true \
+    -e RECORDING_STORAGE_PATH=/app/data/recordings \
+    -v "${RECORDING_HOST_PATH}:/app/data/recordings" \
     -e FRONTEND_ORIGIN=http://13.193.148.45 \
     "${image}"
 }

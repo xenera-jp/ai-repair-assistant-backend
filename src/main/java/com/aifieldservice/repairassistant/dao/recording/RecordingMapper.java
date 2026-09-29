@@ -1,0 +1,76 @@
+package com.aifieldservice.repairassistant.dao.recording;
+
+import java.util.List;
+import org.apache.ibatis.annotations.Param;
+import com.aifieldservice.repairassistant.domain.recording.model.RecordingRows;
+
+/** MyBatis access point for recording batches, transcripts, extracted issues and applications. */
+public interface RecordingMapper {
+    int insertBatch(@Param("batchKey") String batchKey, @Param("languageCode") String languageCode,
+            @Param("status") String status);
+    RecordingRows.Batch findBatch(@Param("batchKey") String batchKey);
+    RecordingRows.Batch findBatchById(@Param("batchId") long batchId);
+    int updateBatchStatus(@Param("batchId") long batchId, @Param("status") String status,
+            @Param("error") String error);
+    int incrementExtractionRevision(@Param("batchId") long batchId);
+
+    int insertFile(@Param("fileKey") String fileKey, @Param("batchId") long batchId,
+            @Param("displayOrder") int displayOrder, @Param("originalName") String originalName,
+            @Param("storageKey") String storageKey, @Param("contentType") String contentType,
+            @Param("sizeBytes") long sizeBytes, @Param("sha256") String sha256,
+            @Param("status") String status);
+    RecordingRows.File findFile(@Param("fileKey") String fileKey);
+    List<RecordingRows.File> listFiles(@Param("batchId") long batchId);
+    List<RecordingRows.File> listIncompleteFiles();
+    int updateFileStatus(@Param("fileId") long fileId, @Param("status") String status,
+            @Param("errorCode") String errorCode, @Param("errorDetail") String errorDetail);
+    int deleteFile(@Param("fileId") long fileId);
+
+    int deleteSegments(@Param("fileId") long fileId);
+    int insertSegment(@Param("segmentKey") String segmentKey, @Param("fileId") long fileId,
+            @Param("sequenceNo") int sequenceNo, @Param("speakerLabel") String speakerLabel,
+            @Param("startMs") long startMs, @Param("endMs") long endMs,
+            @Param("originalText") String originalText, @Param("providerSegmentId") String providerSegmentId);
+    List<RecordingRows.Segment> listSegments(@Param("fileId") long fileId);
+    List<RecordingRows.Segment> listBatchSegments(@Param("batchId") long batchId);
+    int updateSpeakerRole(@Param("fileId") long fileId, @Param("speakerLabel") String speakerLabel,
+            @Param("roleCode") String roleCode, @Param("confidence") Double confidence,
+            @Param("source") String source);
+
+    int deleteCurrentIssues(@Param("batchId") long batchId, @Param("revision") int revision);
+    int insertIssue(@Param("issueKey") String issueKey, @Param("batchId") long batchId,
+            @Param("revision") int revision, @Param("issueType") String issueType,
+            @Param("content") String content, @Param("originalContent") String originalContent,
+            @Param("displayOrder") int displayOrder);
+    RecordingRows.Issue findIssue(@Param("batchId") long batchId, @Param("issueKey") String issueKey);
+    List<RecordingRows.Issue> listIssues(@Param("batchId") long batchId, @Param("revision") int revision);
+    int insertEvidence(@Param("issueId") long issueId, @Param("segmentId") long segmentId,
+            @Param("evidenceOrder") int evidenceOrder);
+    List<RecordingRows.Evidence> listEvidence(@Param("batchId") long batchId, @Param("revision") int revision);
+    int updateIssueContent(@Param("issueId") long issueId, @Param("content") String content,
+            @Param("versionNo") int versionNo);
+    int updateIssueDeleted(@Param("issueId") long issueId, @Param("deleted") boolean deleted);
+    int insertCorrection(@Param("correctionKey") String correctionKey, @Param("batchId") long batchId,
+            @Param("revision") int revision, @Param("issueId") long issueId,
+            @Param("fieldType") String fieldType, @Param("originalValue") String originalValue,
+            @Param("suggestedValue") String suggestedValue, @Param("modelValue") String modelValue,
+            @Param("sourceText") String sourceText, @Param("evidenceJson") String evidenceJson,
+            @Param("candidatesJson") String candidatesJson, @Param("ruleScore") Double ruleScore,
+            @Param("scoreMargin") Double scoreMargin, @Param("reason") String reason,
+            @Param("status") String status);
+    List<RecordingRows.Correction> listCorrections(@Param("batchId") long batchId, @Param("revision") int revision);
+    RecordingRows.Correction findCorrectionForIssue(@Param("issueId") long issueId);
+    int resolveCorrection(@Param("correctionId") long correctionId, @Param("status") String status);
+    int invalidatePendingCorrection(@Param("issueId") long issueId);
+    int countPendingCorrections(@Param("batchId") long batchId, @Param("revision") int revision);
+    int applyCorrectionContent(@Param("issueId") long issueId, @Param("content") String content,
+            @Param("versionNo") int versionNo);
+
+    int insertApplication(@Param("applicationKey") String applicationKey, @Param("batchId") long batchId,
+            @Param("revision") int revision, @Param("composedText") String composedText);
+    RecordingRows.Application findApplication(@Param("applicationKey") String applicationKey);
+    int consumeApplication(@Param("applicationId") long applicationId);
+    int attachUnderstanding(@Param("applicationId") long applicationId, @Param("understandingKey") String understandingKey);
+    int attachDiagnosis(@Param("applicationId") long applicationId, @Param("diagnosisKey") String diagnosisKey);
+    int countApplications(@Param("batchId") long batchId);
+}

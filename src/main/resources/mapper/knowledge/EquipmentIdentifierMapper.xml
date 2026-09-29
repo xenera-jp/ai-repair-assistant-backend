@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.aifieldservice.repairassistant.dao.knowledge.EquipmentIdentifierMapper">
+    <select id="listIdentifiers" resultType="com.aifieldservice.repairassistant.dao.knowledge.EquipmentIdentifierMapper$Row">
+        SELECT DISTINCT model, JSON_ARRAY(error_code) AS error_codes_json
+        FROM manual_knowledge_projection_v1 WHERE model IS NOT NULL AND model != ''
+        UNION
+        SELECT DISTINCT model, error_codes_json
+        FROM repair_case_projection_v1 WHERE model IS NOT NULL AND model != ''
+    </select>
+</mapper>

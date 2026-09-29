@@ -24,6 +24,14 @@ repair-assistant:
     chat-model: test-chat-model
     embedding-model: test-embedding-model
     embedding-dimensions: 512
+  recording:
+    storage-path: ./target/test-recordings
+    max-file-size-bytes: 104857600
+    max-files-per-batch: 10
+    retention-days: 1
+    transcription-model: gpt-4o-transcribe-diarize
+    speaker-role-confidence-threshold: 0.75
+    worker-concurrency: 1
   problem-understanding:
     semantic-fallback-enabled: true
     rule-classification-accept-score: 35

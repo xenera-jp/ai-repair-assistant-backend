@@ -3,6 +3,7 @@ package com.aifieldservice.repairassistant.config;
 import java.util.List;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.bind.ConstructorBinding;
 
 /**
  * 业务侧配置的统一入口。
@@ -16,7 +17,28 @@ public record RepairAssistantProperties(
         Knowledge knowledge,
         Qdrant qdrant,
         OpenAi openai,
+        Recording recording,
         ProblemUnderstanding problemUnderstanding) {
+
+    @ConstructorBinding
+    public RepairAssistantProperties(Web web, Knowledge knowledge, Qdrant qdrant, OpenAi openai,
+            Recording recording, ProblemUnderstanding problemUnderstanding) {
+        this.web = web;
+        this.knowledge = knowledge;
+        this.qdrant = qdrant;
+        this.openai = openai;
+        this.recording = recording;
+        this.problemUnderstanding = problemUnderstanding;
+    }
+
+    /** Keeps focused unit tests and integrations that construct the pre-recording property shape source-compatible. */
+    public RepairAssistantProperties(Web web, Knowledge knowledge, Qdrant qdrant, OpenAi openai,
+            ProblemUnderstanding problemUnderstanding) {
+        this(web, knowledge, qdrant, openai,
+                new Recording("./data/recordings", 104857600L, 10, 30,
+                        "gpt-4o-transcribe-diarize", 0.75, 2, 15, 180),
+                problemUnderstanding);
+    }
 
     /** 前端可访问 API 的来源白名单。 */
     public record Web(List<String> allowedOrigins) {
@@ -40,6 +62,19 @@ public record RepairAssistantProperties(
             String chatModel,
             String embeddingModel,
             int embeddingDimensions) {
+    }
+
+    /** 录音文件、模型和后台处理限制。 */
+    public record Recording(
+            String storagePath,
+            long maxFileSizeBytes,
+            int maxFilesPerBatch,
+            int retentionDays,
+            String transcriptionModel,
+            double speakerRoleConfidenceThreshold,
+            int workerConcurrency,
+            int connectTimeoutSeconds,
+            int readTimeoutSeconds) {
     }
 
     /** 问题理解中规则和语义兜底的可运营阈值。 */
