@@ -4,12 +4,14 @@ import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.request;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import java.time.LocalDateTime;
@@ -63,7 +65,11 @@ class RecordingControllerTests {
             when(service.getFile("rf_1")).thenReturn(row);
             when(service.resolveContent(row)).thenReturn(audio);
 
-            mockMvc.perform(get("/api/v1/recording-files/rf_1/content").header("Range", "bytes=1-3"))
+            var result = mockMvc.perform(get("/api/v1/recording-files/rf_1/content").header("Range", "bytes=1-3"))
+                    .andExpect(request().asyncStarted())
+                    .andReturn();
+
+            mockMvc.perform(asyncDispatch(result))
                     .andExpect(status().isPartialContent())
                     .andExpect(header().string("Content-Range", "bytes 1-3/5"))
                     .andExpect(header().longValue("Content-Length", 3))
