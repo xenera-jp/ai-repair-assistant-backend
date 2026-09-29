@@ -3,6 +3,7 @@
 .idea
 .vscode
 target
+data/recordings
 *.log
 .env
 .env.*

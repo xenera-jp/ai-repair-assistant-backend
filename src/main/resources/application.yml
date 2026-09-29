@@ -58,6 +58,16 @@ repair-assistant:
     chat-model: ${OPENAI_CHAT_MODEL:gpt-5-mini}
     embedding-model: ${OPENAI_EMBEDDING_MODEL:text-embedding-3-small}
     embedding-dimensions: ${OPENAI_EMBEDDING_DIMENSIONS:512}
+  recording:
+    storage-path: ${RECORDING_STORAGE_PATH:./data/recordings}
+    max-file-size-bytes: ${RECORDING_MAX_FILE_SIZE_BYTES:104857600}
+    max-files-per-batch: ${RECORDING_MAX_FILES_PER_BATCH:10}
+    retention-days: ${RECORDING_RETENTION_DAYS:30}
+    transcription-model: ${OPENAI_TRANSCRIPTION_MODEL:gpt-4o-transcribe-diarize}
+    speaker-role-confidence-threshold: ${SPEAKER_ROLE_CONFIDENCE_THRESHOLD:0.75}
+    worker-concurrency: ${RECORDING_WORKER_CONCURRENCY:2}
+    connect-timeout-seconds: ${OPENAI_RECORDING_CONNECT_TIMEOUT_SECONDS:15}
+    read-timeout-seconds: ${OPENAI_RECORDING_READ_TIMEOUT_SECONDS:180}
   problem-understanding:
     semantic-fallback-enabled: ${SEMANTIC_FALLBACK_ENABLED:true}
     # 规则候选已过滤 <35 的弱信号；达到 35 即可进入 AI 分析且不调用 LLM。
@@ -66,3 +76,7 @@ repair-assistant:
     llm-classification-accept-score: ${LLM_CLASSIFICATION_ACCEPT_SCORE:0.0}
     # 保留兼容配置；当前实现仅在规则未达到阈值时调用 LLM。
     llm-field-completion-after-classification-enabled: ${LLM_FIELD_COMPLETION_AFTER_CLASSIFICATION_ENABLED:false}
+
+spring.servlet.multipart:
+  max-file-size: ${RECORDING_MAX_FILE_SIZE:100MB}
+  max-request-size: ${RECORDING_MAX_REQUEST_SIZE:1000MB}

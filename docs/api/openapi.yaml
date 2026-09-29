@@ -11,6 +11,8 @@ servers:
     description: Current backend origin
 security: []
 tags:
+  - name: Recordings
+    description: Multi-file audio upload, diarized transcripts, extracted issues and diagnosis handoff.
   - name: System
     description: Runtime and knowledge snapshot status.
   - name: Problem Understanding
@@ -20,6 +22,136 @@ tags:
   - name: Reports
     description: User-saved immutable diagnosis reports.
 paths:
+  /api/v1/recording-batches:
+    post:
+      tags: [Recordings]
+      operationId: createRecordingBatch
+      summary: Upload one or more recordings and start asynchronous transcription
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [files]
+              properties:
+                files:
+                  type: array
+                  items: { type: string, format: binary }
+                language: { type: string, enum: [zh-CN, ja-JP, AUTO], default: AUTO }
+      responses:
+        "201": { description: Recording batch created }
+        "422": { $ref: "#/components/responses/ValidationError" }
+  /api/v1/recording-batches/{batchId}:
+    get:
+      tags: [Recordings]
+      operationId: getRecordingBatch
+      summary: Get files, transcripts and the latest extracted issues
+      parameters:
+        - { name: batchId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Current recording batch snapshot }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/v1/recording-files/{fileId}/content:
+    get:
+      tags: [Recordings]
+      operationId: streamRecordingFile
+      summary: Stream recording content with HTTP Range support
+      parameters:
+        - { name: fileId, in: path, required: true, schema: { type: string } }
+        - { name: Range, in: header, required: false, schema: { type: string } }
+      responses:
+        "200": { description: Complete audio resource }
+        "206": { description: Partial audio resource }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/v1/recording-files/{fileId}/speakers/{speakerLabel}/role:
+    put:
+      tags: [Recordings]
+      operationId: setRecordingSpeakerRole
+      summary: Apply a business role to every segment of one file speaker
+      parameters:
+        - { name: fileId, in: path, required: true, schema: { type: string } }
+        - { name: speakerLabel, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [roleCode]
+              properties:
+                roleCode: { type: string, enum: [CUSTOMER_SERVICE, CUSTOMER, FIELD_ENGINEER, OTHER, UNKNOWN] }
+      responses:
+        "200": { description: Updated batch snapshot }
+  /api/v1/recording-batches/{batchId}/issue-extractions:
+    post:
+      tags: [Recordings]
+      operationId: retryRecordingIssueExtraction
+      summary: Start or retry structured issue extraction
+      parameters:
+        - { name: batchId, in: path, required: true, schema: { type: string } }
+      responses:
+        "202": { description: Extraction accepted }
+  /api/v1/recording-batches/{batchId}/applications:
+    post:
+      tags: [Recordings]
+      operationId: createRecordingApplication
+      summary: Create an immutable composed problem description for diagnosis
+      parameters:
+        - { name: batchId, in: path, required: true, schema: { type: string } }
+      responses:
+        "201": { description: Recording application created }
+        "409": { description: Extraction is not ready }
+        "422": { $ref: "#/components/responses/ValidationError" }
+  /api/v1/recording-batches/{batchId}/identifier-corrections/confirm:
+    post:
+      tags: [Recordings]
+      operationId: confirmRecordingIdentifierCorrections
+      summary: Accept suggestions or explicitly keep original extracted identifier values
+      parameters:
+        - { name: batchId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decisions]
+              properties:
+                decisions:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: object
+                    required: [issueId, version, decision]
+                    properties:
+                      issueId: { type: string }
+                      version: { type: integer, minimum: 0 }
+                      decision: { type: string, enum: [ACCEPT, KEEP_ORIGINAL] }
+      responses:
+        "200": { description: Updated recording batch snapshot }
+        "409": { description: Batch, issue version, or pending suggestion changed }
+  /api/v1/recording-applications/{applicationId}:
+    get:
+      tags: [Recordings]
+      operationId: getRecordingApplication
+      summary: Get the immutable diagnosis handoff snapshot
+      parameters:
+        - { name: applicationId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Recording application }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/v1/recording-applications/{applicationId}/consume:
+    post:
+      tags: [Recordings]
+      operationId: consumeRecordingApplication
+      summary: Atomically mark the handoff as consumed
+      parameters:
+        - { name: applicationId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Consumed application state }
+        "409": { description: Concurrent consumption conflict }
+
   /api/v1/system/status:
     get:
       tags: [System]

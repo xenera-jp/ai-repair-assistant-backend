@@ -41,7 +41,11 @@ services:
       QDRANT_COLLECTION: ${QDRANT_COLLECTION:-ai_repair_knowledge_v1}
       KNOWLEDGE_SOURCE_PATH: /app/data/knowledge
       KNOWLEDGE_IMPORT_ENABLED: ${KNOWLEDGE_IMPORT_ENABLED:-true}
+      RECORDING_STORAGE_PATH: /app/data/recordings
+      RECORDING_RETENTION_DAYS: ${RECORDING_RETENTION_DAYS:-30}
       SERVER_PORT: 8080
+    volumes:
+      - ${RECORDING_HOST_PATH:-/opt/ai-repair-assistant/data/recordings}:/app/data/recordings
     ports:
       - "${BACKEND_PORT:-8080}:8080"
     depends_on:
