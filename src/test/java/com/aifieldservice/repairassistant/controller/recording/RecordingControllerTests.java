@@ -3,8 +3,10 @@ package com.aifieldservice.repairassistant.controller.recording;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
@@ -26,6 +28,7 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import com.aifieldservice.repairassistant.domain.recording.model.RecordingViews;
 import com.aifieldservice.repairassistant.domain.recording.model.RecordingRows;
 import com.aifieldservice.repairassistant.service.recording.RecordingService;
+import com.aifieldservice.repairassistant.service.recording.RecordingTranscriptionStream;
 
 class RecordingControllerTests {
     private RecordingService service;
@@ -33,18 +36,28 @@ class RecordingControllerTests {
 
     @BeforeEach void setUp() {
         service = mock(RecordingService.class);
-        mockMvc = MockMvcBuilders.standaloneSetup(new RecordingController(service)).build();
+        mockMvc = MockMvcBuilders.standaloneSetup(new RecordingController(service, new RecordingTranscriptionStream())).build();
     }
 
-    @Test void uploadsMultipleFilesAndReturnsBatch() throws Exception {
+    @Test void rejectsMultipleFiles() throws Exception {
         RecordingViews.Batch batch = batch();
         when(service.create(anyList(), org.mockito.ArgumentMatchers.eq("zh-CN"))).thenReturn(batch);
         MockMultipartFile first = new MockMultipartFile("files", "call.wav", "audio/wav", new byte[]{1,2});
         MockMultipartFile second = new MockMultipartFile("files", "note.mp3", "audio/mpeg", new byte[]{3,4});
 
         mockMvc.perform(multipart("/api/v1/recording-batches").file(first).file(second).param("language", "zh-CN"))
+                .andExpect(status().isUnprocessableEntity());
+        verifyNoInteractions(service);
+    }
+
+    @Test void uploadsOneFileAndReturnsBatch() throws Exception {
+        RecordingViews.Batch batch = batch();
+        when(service.create(anyList(), org.mockito.ArgumentMatchers.eq("zh-CN"))).thenReturn(batch);
+        MockMultipartFile file = new MockMultipartFile("files", "call.wav", "audio/wav", new byte[]{1,2});
+
+        mockMvc.perform(multipart("/api/v1/recording-batches").file(file).param("language", "zh-CN"))
                 .andExpect(status().isCreated()).andExpect(jsonPath("$.id").value("rb_test"))
-                .andExpect(jsonPath("$.files.length()").value(2));
+                .andExpect(jsonPath("$.files.length()").value(1));
         verify(service).create(anyList(), org.mockito.ArgumentMatchers.eq("zh-CN"));
     }
 
@@ -56,12 +69,18 @@ class RecordingControllerTests {
         verify(service).setSpeakerRole("rf_1", "A", "CUSTOMER_SERVICE");
     }
 
+    @Test void deletesRecordingFileIdempotentlyThroughService() throws Exception {
+        mockMvc.perform(delete("/api/v1/recording-files/rf_1"))
+                .andExpect(status().isNoContent());
+        verify(service).deleteFile("rf_1");
+    }
+
     @Test void streamsRequestedAudioByteRange() throws Exception {
         var audio = Files.createTempFile("recording-controller-", ".mp3");
         try {
             Files.write(audio, new byte[]{10, 20, 30, 40, 50});
             var row = new RecordingRows.File(1, "rf_1", 1, 0, "call.mp3", "unused",
-                    "audio/mpeg", 5, "sha", "COMPLETED", null, null);
+                    "audio/mpeg", 5, "sha", "COMPLETED", null, null, false, null);
             when(service.getFile("rf_1")).thenReturn(row);
             when(service.resolveContent(row)).thenReturn(audio);
 
@@ -81,8 +100,7 @@ class RecordingControllerTests {
 
     private RecordingViews.Batch batch() {
         return new RecordingViews.Batch("rb_test", "zh-CN", "TRANSCRIBING", 0, null,
-                List.of(new RecordingViews.File("rf_1", "call.wav", "audio/wav", 2, "TRANSCRIBING", null, null, List.of()),
-                        new RecordingViews.File("rf_2", "note.mp3", "audio/mpeg", 2, "UPLOADED", null, null, List.of())),
+                List.of(new RecordingViews.File("rf_1", "call.wav", "audio/wav", 2, "TRANSCRIBING", null, null, List.of())),
                 List.of(), LocalDateTime.parse("2026-09-15T12:00:00"));
     }
 }

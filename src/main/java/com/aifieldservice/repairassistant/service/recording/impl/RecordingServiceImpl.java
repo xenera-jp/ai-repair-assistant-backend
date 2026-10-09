@@ -7,10 +7,8 @@ import java.nio.file.StandardCopyOption;
 import java.security.DigestInputStream;
 import java.security.MessageDigest;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -18,12 +16,15 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.web.multipart.MultipartFile;
@@ -35,6 +36,7 @@ import com.aifieldservice.repairassistant.domain.recording.model.RecordingRows;
 import com.aifieldservice.repairassistant.domain.recording.model.RecordingViews;
 import com.aifieldservice.repairassistant.integration.openai.OpenAiRecordingGateway;
 import com.aifieldservice.repairassistant.service.recording.RecordingService;
+import com.aifieldservice.repairassistant.service.recording.RecordingTranscriptionStream;
 import com.aifieldservice.repairassistant.service.recording.EquipmentIdentifierMatchingService;
 import com.aifieldservice.repairassistant.service.recording.RecordingService.CorrectionDecision;
 import tools.jackson.databind.ObjectMapper;
@@ -51,14 +53,19 @@ public class RecordingServiceImpl implements RecordingService {
     private final RepairAssistantProperties properties;
     private final OpenAiRecordingGateway openAi;
     private final EquipmentIdentifierMatchingService identifierMatching;
+    private final RecordingTranscriptionStream transcriptionStream;
+    private final TransactionTemplate transactions;
     private final Path root;
     private final ExecutorService workers;
     private final ObjectMapper json = new ObjectMapper();
 
     public RecordingServiceImpl(RecordingMapper mapper, RepairAssistantProperties properties, OpenAiRecordingGateway openAi,
-            EquipmentIdentifierMatchingService identifierMatching) {
+            EquipmentIdentifierMatchingService identifierMatching, RecordingTranscriptionStream transcriptionStream,
+            PlatformTransactionManager transactionManager) {
         this.mapper = mapper; this.properties = properties; this.openAi = openAi;
         this.identifierMatching = identifierMatching;
+        this.transcriptionStream = transcriptionStream;
+        this.transactions = new TransactionTemplate(transactionManager);
         this.root = Path.of(properties.recording().storagePath()).toAbsolutePath().normalize();
         try { Files.createDirectories(root.resolve(".uploading")); }
         catch (Exception e) { throw new IllegalStateException("无法创建录音存储目录: " + root, e); }
@@ -77,7 +84,7 @@ public class RecordingServiceImpl implements RecordingService {
     @Override @Transactional
     public RecordingViews.Batch create(List<MultipartFile> uploads, String language) {
         if (uploads == null || uploads.isEmpty()) throw bad("请至少选择一个录音文件。");
-        if (uploads.size() > properties.recording().maxFilesPerBatch()) throw bad("单批录音文件数量超过限制。");
+        if (uploads.size() != 1) throw bad("一次只能上传一个录音文件。");
         String normalizedLanguage = Set.of("zh-CN","ja-JP","AUTO").contains(language) ? language : "AUTO";
         String batchKey = key("rb");
         mapper.insertBatch(batchKey, normalizedLanguage, "UPLOADING");
@@ -123,16 +130,48 @@ public class RecordingServiceImpl implements RecordingService {
         mapper.updateFileStatus(file.id(), "TRANSCRIBING", null, null);
         try {
             RecordingRows.Batch batch = batchById(file.batchId());
-            List<OpenAiRecordingGateway.Transcript> result = openAi.transcribe(resolveContent(file), file.originalName(), file.contentType(), batch.languageCode());
-            mapper.deleteSegments(file.id());
-            int i=0;
-            for (var s : result) mapper.insertSegment(key("rs"), file.id(), i++, s.speaker(), s.startMs(), s.endMs(), s.text(), s.providerId());
-            mapper.updateFileStatus(file.id(), "COMPLETED", null, null);
+            mapper.softDeleteSegments(file.id(), "TRANSCRIPTION_REPLACED");
+            AtomicInteger streamedSequence = new AtomicInteger();
+            List<OpenAiRecordingGateway.Transcript> result = openAi.transcribe(resolveContent(file), file.originalName(), file.contentType(), "AUTO",
+                    new OpenAiRecordingGateway.TranscriptStreamListener() {
+                        @Override public void onDelta(OpenAiRecordingGateway.TranscriptDelta delta) {
+                            RecordingRows.File current = mapper.findFileIncludingDeleted(file.fileKey());
+                            if(current!=null&&!current.deleted()) transcriptionStream.publishDelta(batch.batchKey(), file.fileKey(), delta.segmentId(), delta.delta());
+                        }
+                        @Override public void onSegment(OpenAiRecordingGateway.Transcript segment) {
+                            RecordingRows.File current = mapper.findFileIncludingDeleted(file.fileKey());
+                            boolean deleted = current == null || current.deleted();
+                            mapper.insertSegment(key("rs"), file.id(), streamedSequence.getAndIncrement(), segment.speaker(),
+                                    segment.startMs(), segment.endMs(), segment.text(), segment.providerId(), deleted);
+                            if (!deleted) publishBatch(batch.batchKey());
+                        }
+                    });
+            boolean deleted = Boolean.TRUE.equals(transactions.execute(status -> {
+                RecordingRows.File current = mapper.findFileIncludingDeletedForUpdate(file.fileKey());
+                boolean removed = current == null || current.deleted();
+                mapper.softDeleteSegments(file.id(), removed ? "FILE_DELETED" : "TRANSCRIPTION_REPLACED");
+                int i=0;
+                for (var s : result) mapper.insertSegment(key("rs"), file.id(), i++, s.speaker(),
+                        s.startMs(), s.endMs(), s.text(), s.providerId(), removed);
+                mapper.updateFileStatus(file.id(), removed ? "COMPLETED_AFTER_DELETE" : "COMPLETED", null, null);
+                return removed;
+            }));
+            if (deleted) return;
             inferRoles(file.id(), batch.languageCode());
         } catch (Exception e) {
-            mapper.updateFileStatus(file.id(), "FAILED", openAi.enabled() ? "TRANSCRIPTION_FAILED" : "PROVIDER_NOT_CONFIGURED", concise(e));
+            RecordingRows.File current = mapper.findFileIncludingDeleted(file.fileKey());
+            boolean deleted = current == null || current.deleted();
+            mapper.updateFileStatus(file.id(), deleted ? "FAILED_AFTER_DELETE" : "FAILED",
+                    openAi.enabled() ? "TRANSCRIPTION_FAILED" : "PROVIDER_NOT_CONFIGURED", concise(e));
+            if (deleted) return;
         }
         refreshBatch(file.batchId());
+        publishBatch(batchById(file.batchId()).batchKey());
+    }
+
+    private void publishBatch(String batchKey) {
+        try { transcriptionStream.publishBatch(batchKey, view(requiredBatch(batchKey))); }
+        catch (Exception ignored) { /* Browser delivery must not fail the persisted background job. */ }
     }
 
     private void inferRoles(long fileId, String language) {
@@ -257,19 +296,22 @@ public class RecordingServiceImpl implements RecordingService {
         if(mapper.countPendingCorrections(batch.id(),batch.extractionRevision())==0) mapper.updateBatchStatus(batch.id(),"READY",null);
         return view(requiredBatch(batchId));
     }
-    @Override @Transactional public RecordingViews.Application createApplication(String batchId) {
-        RecordingRows.Batch batch=requiredBatch(batchId); if(!"READY".equals(batch.status())||mapper.countPendingCorrections(batch.id(),batch.extractionRevision())>0) throw conflict("仍有设备标识建议待确认。");
-        String text=compose(mapper.listIssues(batch.id(),batch.extractionRevision()),batch.languageCode());
-        if(text.isBlank()) throw bad("没有可应用的提取内容。"); if(text.length()>4000) throw bad("整理后的问题描述超过 4000 个字符。");
-        String key=key("ra"); mapper.insertApplication(key,batch.id(),batch.extractionRevision(),text); return application(mapper.findApplication(key));
-    }
-    @Override public RecordingViews.Application getApplication(String id){return application(requiredApplication(id));}
-    @Override public RecordingViews.Application consumeApplication(String id){var a=requiredApplication(id); if(a.consumedAt()==null&&mapper.consumeApplication(a.id())==0) throw conflict("该录音应用已被消费。"); return application(requiredApplication(id));}
-    @Override public void attachUnderstanding(String id,String understandingId){mapper.attachUnderstanding(requiredApplication(id).id(),understandingId);}
-    @Override public void attachDiagnosis(String id,String diagnosisId){mapper.attachDiagnosis(requiredApplication(id).id(),diagnosisId);}
     @Override public RecordingRows.File getFile(String id){return requiredFile(id);}
     @Override public Path resolveContent(RecordingRows.File file){Path p=safePath(file.storageKey()); if(!Files.isRegularFile(p)) throw notFound("录音文件不存在。"); return p;}
-    @Override @Transactional public void deleteFile(String id){var f=requiredFile(id); if(mapper.countApplications(f.batchId())>0)throw conflict("录音已生成诊断应用，不能删除。"); try{Files.deleteIfExists(resolveContent(f));}catch(Exception e){throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR,"录音删除失败。",e);} mapper.deleteFile(f.id());}
+    @Override @Transactional public void deleteFile(String id){
+        var f=mapper.findFileIncludingDeletedForUpdate(id);
+        if(f==null||f.deleted())return;
+        String reason="USER_DELETED";
+        mapper.softDeleteFile(f.id(),reason);
+        mapper.softDeleteSegments(f.id(),reason);
+        mapper.softDeleteIssues(f.batchId(),reason);
+        mapper.softDeleteEvidence(f.batchId(),reason);
+        mapper.softDeleteCorrections(f.batchId(),reason);
+        mapper.softDeleteBatch(f.batchId(),reason);
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization(){
+            @Override public void afterCommit(){transcriptionStream.publishDeleted(batchById(f.batchId()).batchKey(),f.fileKey());}
+        });
+    }
 
     private RecordingViews.Batch view(RecordingRows.Batch batch) {
         List<RecordingRows.File> files=mapper.listFiles(batch.id());
@@ -309,14 +351,10 @@ public class RecordingServiceImpl implements RecordingService {
             if(issue!=null&&"ERROR_CODE".equals(issue.issueType())&&"USER_ACCEPTED_LLM".equals(correction.status()))syncAcceptedErrorCode(batch,issue,correction);
         }
     }
-    private String compose(List<RecordingRows.Issue> issues,String language){Map<String,List<String>> grouped=new LinkedHashMap<>();TYPE_ORDER.forEach(t->grouped.put(t,new ArrayList<>()));issues.stream().filter(i->!i.deleted()).sorted(Comparator.comparingInt(RecordingRows.Issue::displayOrder)).forEach(i->{String type="OTHER".equals(i.issueType())?"RECENT_CHANGES":i.issueType();String content=trimTerminalPunctuation(i.content());List<String> values=grouped.get(type);if(values!=null&&!content.isBlank()&&!values.contains(content))values.add(content);});Map<String,String> zh=Map.of("MODEL","设备型号","SYMPTOM","主要症状","ERROR_CODE","错误码","OPERATING_STATUS","当前运行状态","OCCURRENCE","发生时间 / 频率","MEASUREMENT","现场测量值","ENVIRONMENT","安装环境","RECENT_CHANGES","近期变化","PHOTO_EVIDENCE","现场照片");Map<String,String> ja=Map.of("MODEL","機器型式","SYMPTOM","主な症状","ERROR_CODE","エラーコード","OPERATING_STATUS","現在の運転状態","OCCURRENCE","発生時期・頻度","MEASUREMENT","現場測定値","ENVIRONMENT","設置環境","RECENT_CHANGES","最近の変更","PHOTO_EVIDENCE","現場写真");Map<String,String> labels="ja-JP".equals(language)?ja:zh;String result=grouped.entrySet().stream().filter(e->!e.getValue().isEmpty()).map(e->labels.get(e.getKey())+"："+String.join("、",e.getValue())).collect(java.util.stream.Collectors.joining("。"));return result.isBlank()?"":result+"。";}
-    private String trimTerminalPunctuation(String value){return value==null?"":value.strip().replaceFirst("[。．.!！?？]+$","");}
     private RecordingRows.Batch requiredBatch(String key){var b=mapper.findBatch(key);if(b==null)throw notFound("录音批次不存在。");return b;}
     private RecordingRows.Batch batchById(long id){var b=mapper.findBatchById(id);if(b==null)throw notFound("录音批次不存在。");return b;}
     private RecordingRows.File requiredFile(String key){var f=mapper.findFile(key);if(f==null)throw notFound("录音文件不存在。");return f;}
     private RecordingRows.Issue requiredIssue(RecordingRows.Batch b,String key){var i=mapper.findIssue(b.id(),key);if(i==null)throw notFound("提取项不存在。");return i;}
-    private RecordingRows.Application requiredApplication(String key){var a=mapper.findApplication(key);if(a==null)throw notFound("录音应用不存在。");return a;}
-    private RecordingViews.Application application(RecordingRows.Application a){return new RecordingViews.Application(a.applicationKey(),a.composedText(),a.status(),a.problemUnderstandingKey(),a.diagnosisSessionKey(),a.consumedAt()!=null);}
     private Path safePath(String storageKey){Path path=root.resolve(storageKey).normalize();if(!path.startsWith(root))throw bad("非法存储路径。");return path;}
     private String extension(String name){String value=name==null?"":name;int dot=value.lastIndexOf('.');return dot<0?"":value.substring(dot+1).toLowerCase(Locale.ROOT);}
     private String safeName(String name){String value=name==null?"recording":""+name;value=value.replace('\\','_').replace('/','_').replaceAll("[\\p{Cntrl}]","_");return value.length()>512?value.substring(value.length()-512):value;}
