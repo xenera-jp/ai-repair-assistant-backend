@@ -92,17 +92,6 @@ paths:
         - { name: batchId, in: path, required: true, schema: { type: string } }
       responses:
         "202": { description: Extraction accepted }
-  /api/v1/recording-batches/{batchId}/applications:
-    post:
-      tags: [Recordings]
-      operationId: createRecordingApplication
-      summary: Create an immutable composed problem description for diagnosis
-      parameters:
-        - { name: batchId, in: path, required: true, schema: { type: string } }
-      responses:
-        "201": { description: Recording application created }
-        "409": { description: Extraction is not ready }
-        "422": { $ref: "#/components/responses/ValidationError" }
   /api/v1/recording-batches/{batchId}/identifier-corrections/confirm:
     post:
       tags: [Recordings]
@@ -131,27 +120,6 @@ paths:
       responses:
         "200": { description: Updated recording batch snapshot }
         "409": { description: Batch, issue version, or pending suggestion changed }
-  /api/v1/recording-applications/{applicationId}:
-    get:
-      tags: [Recordings]
-      operationId: getRecordingApplication
-      summary: Get the immutable diagnosis handoff snapshot
-      parameters:
-        - { name: applicationId, in: path, required: true, schema: { type: string } }
-      responses:
-        "200": { description: Recording application }
-        "404": { $ref: "#/components/responses/NotFound" }
-  /api/v1/recording-applications/{applicationId}/consume:
-    post:
-      tags: [Recordings]
-      operationId: consumeRecordingApplication
-      summary: Atomically mark the handoff as consumed
-      parameters:
-        - { name: applicationId, in: path, required: true, schema: { type: string } }
-      responses:
-        "200": { description: Consumed application state }
-        "409": { description: Concurrent consumption conflict }
-
   /api/v1/system/status:
     get:
       tags: [System]

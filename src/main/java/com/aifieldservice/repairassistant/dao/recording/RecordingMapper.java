@@ -4,11 +4,12 @@ import java.util.List;
 import org.apache.ibatis.annotations.Param;
 import com.aifieldservice.repairassistant.domain.recording.model.RecordingRows;
 
-/** MyBatis access point for recording batches, transcripts, extracted issues and applications. */
+/** MyBatis access point for recording batches, transcripts and extracted issues. */
 public interface RecordingMapper {
     int insertBatch(@Param("batchKey") String batchKey, @Param("languageCode") String languageCode,
             @Param("status") String status);
     RecordingRows.Batch findBatch(@Param("batchKey") String batchKey);
+    RecordingRows.Batch findBatchIncludingDeleted(@Param("batchKey") String batchKey);
     RecordingRows.Batch findBatchById(@Param("batchId") long batchId);
     int updateBatchStatus(@Param("batchId") long batchId, @Param("status") String status,
             @Param("error") String error);
@@ -20,17 +21,24 @@ public interface RecordingMapper {
             @Param("sizeBytes") long sizeBytes, @Param("sha256") String sha256,
             @Param("status") String status);
     RecordingRows.File findFile(@Param("fileKey") String fileKey);
+    RecordingRows.File findFileIncludingDeleted(@Param("fileKey") String fileKey);
+    RecordingRows.File findFileIncludingDeletedForUpdate(@Param("fileKey") String fileKey);
     List<RecordingRows.File> listFiles(@Param("batchId") long batchId);
     List<RecordingRows.File> listIncompleteFiles();
     int updateFileStatus(@Param("fileId") long fileId, @Param("status") String status,
             @Param("errorCode") String errorCode, @Param("errorDetail") String errorDetail);
-    int deleteFile(@Param("fileId") long fileId);
+    int softDeleteBatch(@Param("batchId") long batchId, @Param("reason") String reason);
+    int softDeleteFile(@Param("fileId") long fileId, @Param("reason") String reason);
+    int softDeleteIssues(@Param("batchId") long batchId, @Param("reason") String reason);
+    int softDeleteEvidence(@Param("batchId") long batchId, @Param("reason") String reason);
+    int softDeleteCorrections(@Param("batchId") long batchId, @Param("reason") String reason);
 
-    int deleteSegments(@Param("fileId") long fileId);
+    int softDeleteSegments(@Param("fileId") long fileId, @Param("reason") String reason);
     int insertSegment(@Param("segmentKey") String segmentKey, @Param("fileId") long fileId,
             @Param("sequenceNo") int sequenceNo, @Param("speakerLabel") String speakerLabel,
             @Param("startMs") long startMs, @Param("endMs") long endMs,
-            @Param("originalText") String originalText, @Param("providerSegmentId") String providerSegmentId);
+            @Param("originalText") String originalText, @Param("providerSegmentId") String providerSegmentId,
+            @Param("deleted") boolean deleted);
     List<RecordingRows.Segment> listSegments(@Param("fileId") long fileId);
     List<RecordingRows.Segment> listBatchSegments(@Param("batchId") long batchId);
     int updateSpeakerRole(@Param("fileId") long fileId, @Param("speakerLabel") String speakerLabel,
@@ -66,11 +74,4 @@ public interface RecordingMapper {
     int applyCorrectionContent(@Param("issueId") long issueId, @Param("content") String content,
             @Param("versionNo") int versionNo);
 
-    int insertApplication(@Param("applicationKey") String applicationKey, @Param("batchId") long batchId,
-            @Param("revision") int revision, @Param("composedText") String composedText);
-    RecordingRows.Application findApplication(@Param("applicationKey") String applicationKey);
-    int consumeApplication(@Param("applicationId") long applicationId);
-    int attachUnderstanding(@Param("applicationId") long applicationId, @Param("understandingKey") String understandingKey);
-    int attachDiagnosis(@Param("applicationId") long applicationId, @Param("diagnosisKey") String diagnosisKey);
-    int countApplications(@Param("batchId") long batchId);
 }

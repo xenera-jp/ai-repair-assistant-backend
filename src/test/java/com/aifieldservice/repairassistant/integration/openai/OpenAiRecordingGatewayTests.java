@@ -18,6 +18,38 @@ import tools.jackson.databind.ObjectMapper;
 class OpenAiRecordingGatewayTests {
     @TempDir Path directory;
 
+    @Test void requiresExtractedDescriptionsToUseTheTranscriptionLanguage() {
+        var builder = RestClient.builder();
+        var server = MockRestServiceServer.bindTo(builder).build();
+        var mockBuilder = org.mockito.Mockito.spy(builder);
+        org.mockito.Mockito.doReturn(mockBuilder).when(mockBuilder).requestFactory(org.mockito.ArgumentMatchers.any());
+        var properties = new RepairAssistantProperties(null, null, null,
+                new RepairAssistantProperties.OpenAi("https://recording.test/v1", "test-key", "unused", "unused", 1), null);
+        var json = new ObjectMapper();
+        server.expect(requestTo("https://recording.test/v1/responses"))
+                .andExpect(request -> {
+                    var body = json.readTree(((MockClientHttpRequest) request).getBodyAsString());
+                    assertEquals("recording_issues", body.path("text").path("format").path("name").asText());
+                    String input = body.path("input").asText();
+                    assertTrue(input.contains("输出语言必须与转写内容一致"));
+                    assertTrue(input.contains("日语转写用日语，中文转写用中文"));
+                    assertTrue(input.contains("冷却できず、高温警報が続いています"));
+                })
+                .andRespond(withSuccess(json.writeValueAsString(java.util.Map.of("output", java.util.List.of(
+                        java.util.Map.of("content", java.util.List.of(java.util.Map.of("text", """
+                                {"items":[{"type":"SYMPTOM","content":"冷却できず、高温警報が続いています","evidenceSegmentIds":["s1"]}]}
+                                """)))))), MediaType.APPLICATION_JSON));
+        var gateway = new OpenAiRecordingGateway(properties, mockBuilder, json);
+        var segments = java.util.List.of(new com.aifieldservice.repairassistant.domain.recording.model.RecordingRows.Segment(
+                1, "s1", 1, 0, "B", "CUSTOMER", 1.0, "MODEL", 0, 1000,
+                "冷却できず、高温警報が続いています", "p1"));
+
+        var result = gateway.extract(segments, "zh-CN");
+
+        assertEquals("冷却できず、高温警報が続いています", result.getFirst().content());
+        server.verify();
+    }
+
     @Test void acceptsE4CorrectionEvenWhenFirstExtractionMisclassifiedDisplayAsSymptom() {
         for (String type : java.util.List.of("ERROR_CODE", "SYMPTOM")) {
             var fixture = matchingFixture("""
@@ -165,12 +197,30 @@ class OpenAiRecordingGatewayTests {
                     assertTrue(body.contains("name=\"language\""));
                     assertTrue(body.contains("\r\n\r\nja\r\n"));
                     assertTrue(body.contains("name=\"temperature\""));
+                    assertTrue(body.contains("name=\"stream\""));
+                    assertTrue(body.contains("\r\n\r\ntrue\r\n"));
                 })
-                .andRespond(withSuccess("{\"segments\":[{\"id\":\"s1\",\"start\":0.25,\"end\":1.5,\"speaker\":\"A\",\"text\":\"hello\"}]}", MediaType.APPLICATION_JSON));
+                .andRespond(withSuccess("""
+                        data: {"type":"transcript.text.delta","segment_id":"s1","delta":"hel"}
+
+                        data: {"type":"transcript.text.delta","segment_id":"s1","delta":"lo"}
+
+                        data: {"type":"transcript.text.segment","id":"s1","start":0.25,"end":1.5,"speaker":"A","text":"hello"}
+
+                        data: {"type":"transcript.text.done","text":"hello"}
+
+                        """, MediaType.TEXT_EVENT_STREAM));
         Path audio = Files.writeString(directory.resolve("stored.wav"), "test-audio-content");
-        var result = gateway.transcribe(audio, "call.wav", "audio/wav", "ja-JP");
+        var deltas = new java.util.ArrayList<String>();
+        var streamed = new java.util.ArrayList<OpenAiRecordingGateway.Transcript>();
+        var result = gateway.transcribe(audio, "call.wav", "audio/wav", "ja-JP", new OpenAiRecordingGateway.TranscriptStreamListener() {
+            @Override public void onDelta(OpenAiRecordingGateway.TranscriptDelta delta) { deltas.add(delta.delta()); }
+            @Override public void onSegment(OpenAiRecordingGateway.Transcript segment) { streamed.add(segment); }
+        });
         assertEquals(1, result.size());
         assertEquals(new OpenAiRecordingGateway.Transcript("s1", 250, 1500, "A", "hello"), result.getFirst());
+        assertEquals(java.util.List.of("hel", "lo"), deltas);
+        assertEquals(result, streamed);
         server.verify();
     }
 

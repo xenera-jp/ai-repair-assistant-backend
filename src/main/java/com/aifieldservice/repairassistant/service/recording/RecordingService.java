@@ -17,11 +17,6 @@ public interface RecordingService {
     RecordingViews.Batch updateIssue(String batchId, String issueId, String content, int version);
     RecordingViews.Batch setIssueDeleted(String batchId, String issueId, boolean deleted);
     RecordingViews.Batch confirmCorrections(String batchId, List<CorrectionDecision> decisions);
-    RecordingViews.Application createApplication(String batchId);
-    RecordingViews.Application getApplication(String applicationId);
-    RecordingViews.Application consumeApplication(String applicationId);
-    void attachUnderstanding(String applicationId, String understandingId);
-    void attachDiagnosis(String applicationId, String diagnosisId);
     RecordingRows.File getFile(String fileId);
     Path resolveContent(RecordingRows.File file);
     void deleteFile(String fileId);

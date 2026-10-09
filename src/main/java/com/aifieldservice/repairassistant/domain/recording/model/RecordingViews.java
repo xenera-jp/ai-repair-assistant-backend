@@ -20,6 +20,4 @@ public final class RecordingViews {
             List<String> evidenceSegmentIds) {}
     public record Evidence(String fileId, String fileName, String segmentId, String speakerLabel,
             String roleCode, long startMs, long endMs, String text) {}
-    public record Application(String id, String composedText, String status,
-            String problemUnderstandingId, String diagnosisSessionId, boolean consumed) {}
 }

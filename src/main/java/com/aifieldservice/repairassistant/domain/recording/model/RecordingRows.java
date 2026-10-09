@@ -7,11 +7,13 @@ public final class RecordingRows {
     private RecordingRows() {}
 
     public record Batch(long id, String batchKey, String languageCode, String status,
-            int extractionRevision, String extractionError, LocalDateTime createdAt) {}
+            int extractionRevision, String extractionError, LocalDateTime createdAt,
+            boolean deleted, LocalDateTime deletedAt) {}
 
     public record File(long id, String fileKey, long batchId, int displayOrder,
             String originalName, String storageKey, String contentType, long sizeBytes,
-            String sha256, String status, String errorCode, String errorDetail) {}
+            String sha256, String status, String errorCode, String errorDetail,
+            boolean deleted, LocalDateTime deletedAt) {}
 
     public record Segment(long id, String segmentKey, long recordingFileId, int sequenceNo,
             String speakerLabel, String speakerRoleCode, Double speakerRoleConfidence,
@@ -32,7 +34,4 @@ public final class RecordingRows {
             Double ruleScore, Double scoreMargin, String reason, String status,
             LocalDateTime confirmedAt) {}
 
-    public record Application(long id, String applicationKey, long batchId,
-            int extractionRevision, String composedText, String status,
-            String problemUnderstandingKey, String diagnosisSessionKey, LocalDateTime consumedAt) {}
 }

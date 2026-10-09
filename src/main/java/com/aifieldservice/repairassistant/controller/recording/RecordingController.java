@@ -22,9 +22,12 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+import org.springframework.web.server.ResponseStatusException;
 
 import com.aifieldservice.repairassistant.domain.recording.model.RecordingViews;
 import com.aifieldservice.repairassistant.service.recording.RecordingService;
+import com.aifieldservice.repairassistant.service.recording.RecordingTranscriptionStream;
 import com.aifieldservice.repairassistant.service.recording.RecordingService.CorrectionDecision;
 
 @RestController
@@ -33,19 +36,30 @@ public class RecordingController {
     public record RoleRequest(String roleCode) {}
     public record IssueCreateRequest(String type, String content) {}
     public record IssueUpdateRequest(String content, int version) {}
-    public record LinkRequest(String id) {}
     public record CorrectionConfirmationRequest(List<CorrectionDecision> decisions) {}
 
     private final RecordingService service;
-    public RecordingController(RecordingService service) { this.service = service; }
+    private final RecordingTranscriptionStream transcriptionStream;
+    public RecordingController(RecordingService service, RecordingTranscriptionStream transcriptionStream) {
+        this.service = service;
+        this.transcriptionStream = transcriptionStream;
+    }
 
     @PostMapping(value="/recording-batches", consumes=MediaType.MULTIPART_FORM_DATA_VALUE)
     @ResponseStatus(HttpStatus.CREATED)
     public RecordingViews.Batch create(@RequestParam("files") List<MultipartFile> files,
-            @RequestParam(defaultValue="AUTO") String language) { return service.create(files, language); }
+            @RequestParam(defaultValue="AUTO") String language) {
+        if (files.size() != 1) throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, "一次只能上传一个录音文件。");
+        return service.create(files, language);
+    }
 
     @GetMapping("/recording-batches/{batchId}")
     public RecordingViews.Batch batch(@PathVariable String batchId) { return service.getBatch(batchId); }
+
+    @GetMapping(value="/recording-batches/{batchId}/transcription-stream", produces=MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter transcriptionStream(@PathVariable String batchId) {
+        return transcriptionStream.subscribe(batchId, () -> service.getBatch(batchId));
+    }
 
     @PostMapping("/recording-files/{fileId}/transcription-retries")
     @ResponseStatus(HttpStatus.ACCEPTED)
@@ -82,23 +96,6 @@ public class RecordingController {
 
     @DeleteMapping("/recording-files/{fileId}") @ResponseStatus(HttpStatus.NO_CONTENT)
     public void deleteFile(@PathVariable String fileId) { service.deleteFile(fileId); }
-
-    @PostMapping("/recording-batches/{batchId}/applications") @ResponseStatus(HttpStatus.CREATED)
-    public RecordingViews.Application createApplication(@PathVariable String batchId) { return service.createApplication(batchId); }
-
-    @GetMapping("/recording-applications/{applicationId}")
-    public RecordingViews.Application application(@PathVariable String applicationId) { return service.getApplication(applicationId); }
-
-    @PostMapping("/recording-applications/{applicationId}/consume")
-    public RecordingViews.Application consume(@PathVariable String applicationId) { return service.consumeApplication(applicationId); }
-
-    @PutMapping("/recording-applications/{applicationId}/problem-understanding")
-    @ResponseStatus(HttpStatus.NO_CONTENT)
-    public void attachUnderstanding(@PathVariable String applicationId, @RequestBody LinkRequest request) { service.attachUnderstanding(applicationId, request.id()); }
-
-    @PutMapping("/recording-applications/{applicationId}/diagnosis-session")
-    @ResponseStatus(HttpStatus.NO_CONTENT)
-    public void attachDiagnosis(@PathVariable String applicationId, @RequestBody LinkRequest request) { service.attachDiagnosis(applicationId, request.id()); }
 
     @GetMapping("/recording-files/{fileId}/content")
     public ResponseEntity<StreamingResponseBody> content(@PathVariable String fileId,
