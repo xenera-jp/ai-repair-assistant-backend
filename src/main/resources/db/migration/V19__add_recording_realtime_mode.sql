@@ -1,0 +1,1 @@
+ALTER TABLE recording_file ADD COLUMN realtime_mode BOOLEAN NOT NULL DEFAULT FALSE;

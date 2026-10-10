@@ -34,8 +34,10 @@ import com.aifieldservice.repairassistant.service.recording.RecordingService.Cor
 @RequestMapping("/api/v1")
 public class RecordingController {
     public record RoleRequest(String roleCode) {}
+    public record SegmentSpeakerRequest(String speakerLabel, List<String> segmentIds) {}
     public record IssueCreateRequest(String type, String content) {}
     public record IssueUpdateRequest(String content, int version) {}
+    public record ExtractionRequest(String conversationVersion) {}
     public record CorrectionConfirmationRequest(List<CorrectionDecision> decisions) {}
 
     private final RecordingService service;
@@ -48,9 +50,10 @@ public class RecordingController {
     @PostMapping(value="/recording-batches", consumes=MediaType.MULTIPART_FORM_DATA_VALUE)
     @ResponseStatus(HttpStatus.CREATED)
     public RecordingViews.Batch create(@RequestParam("files") List<MultipartFile> files,
-            @RequestParam(defaultValue="AUTO") String language) {
+            @RequestParam(defaultValue="AUTO") String language,
+            @RequestParam(defaultValue="false") boolean realtime) {
         if (files.size() != 1) throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, "一次只能上传一个录音文件。");
-        return service.create(files, language);
+        return service.createRealtime(files, language);
     }
 
     @GetMapping("/recording-batches/{batchId}")
@@ -67,7 +70,9 @@ public class RecordingController {
 
     @PostMapping("/recording-batches/{batchId}/issue-extractions")
     @ResponseStatus(HttpStatus.ACCEPTED)
-    public RecordingViews.Batch retryExtraction(@PathVariable String batchId) { return service.retryExtraction(batchId); }
+    public RecordingViews.Batch retryExtraction(@PathVariable String batchId,@RequestBody ExtractionRequest request) {
+        return service.retryExtraction(batchId,request.conversationVersion());
+    }
 
     @PutMapping("/recording-files/{fileId}/speakers/{speakerLabel}/role")
     public RecordingViews.Batch role(@PathVariable String fileId, @PathVariable String speakerLabel,
@@ -92,6 +97,15 @@ public class RecordingController {
     public RecordingViews.Batch confirmCorrections(@PathVariable String batchId,
             @RequestBody CorrectionConfirmationRequest request) {
         return service.confirmCorrections(batchId, request.decisions());
+    }
+
+    @PutMapping("/recording-files/{fileId}/segments/{segmentId}/speaker")
+    public RecordingViews.Batch segmentSpeaker(@PathVariable String fileId, @PathVariable String segmentId,
+            @RequestBody SegmentSpeakerRequest request) {
+        if(request.segmentIds()==null) return service.setSegmentSpeaker(fileId,segmentId,request.speakerLabel());
+        var ids=new java.util.ArrayList<>(request.segmentIds());
+        if(!ids.contains(segmentId)) ids.add(0,segmentId);
+        return service.setSegmentSpeakers(fileId,ids,request.speakerLabel());
     }
 
     @DeleteMapping("/recording-files/{fileId}") @ResponseStatus(HttpStatus.NO_CONTENT)

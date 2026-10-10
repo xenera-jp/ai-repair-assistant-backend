@@ -43,6 +43,42 @@ public class OpenAiRecordingGateway {
     private final RepairAssistantProperties properties;
     private final RestClient client;
     private final ObjectMapper objectMapper;
+    @org.springframework.beans.factory.annotation.Value("${repair-assistant.recording.diarization-model:gpt-4o-transcribe-diarize}")
+    private String diarizationModel = "gpt-4o-transcribe-diarize";
+
+    /** Only audio already accepted from playback is supplied here. No full-file fallback. */
+    public List<Transcript> diarize(byte[] wav, String language, Map<String, String> references) {
+        if (!enabled()) throw new IllegalStateException("OpenAI API Key 未配置。");
+        MultiValueMap<String, Object> parts = new LinkedMultiValueMap<>();
+        var headers = new HttpHeaders(); headers.setContentType(MediaType.parseMediaType("audio/wav"));
+        parts.add("file", new HttpEntity<>(new org.springframework.core.io.ByteArrayResource(wav) {
+            @Override public String getFilename() { return "played-window.wav"; }
+        }, headers));
+        parts.add("model", diarizationModel);
+        parts.add("response_format", "diarized_json");
+        parts.add("chunking_strategy", "auto");
+        if ("ja-JP".equals(language)) parts.add("language", "ja");
+        if ("zh-CN".equals(language)) parts.add("language", "zh");
+        references.forEach((name, audio) -> {
+            parts.add("known_speaker_names[]", name); parts.add("known_speaker_references[]", audio);
+        });
+        JsonNode response = client.post().uri("/audio/transcriptions").contentType(MediaType.MULTIPART_FORM_DATA)
+                .body(parts).retrieve().body(JsonNode.class);
+        if (response == null || !response.path("segments").isArray()) throw new IllegalStateException("分离结果缺少片段。");
+        var result = new ArrayList<Transcript>();
+        for (JsonNode segment : response.path("segments")) {
+            String text = segment.path("text").asText("").strip();
+            long start = Math.round(segment.path("start").asDouble(-1) * 1000);
+            long end = Math.round(segment.path("end").asDouble(-1) * 1000);
+            if (start < 0 || end < start || end > (wav.length - 44L) * 1000 / 48000 + 1000)
+                throw new IllegalStateException("分离时间范围无效。");
+            long duration=(wav.length-44L)*1000/48000;
+            start=Math.min(start,duration); end=Math.min(end,duration);
+            if (!text.isBlank()) result.add(new Transcript(segment.path("id").asText("segment-" + result.size()),
+                    start, end, segment.path("speaker").asText("UNKNOWN"), text));
+        }
+        return result.stream().sorted(java.util.Comparator.comparingLong(Transcript::startMs)).toList();
+    }
 
     public OpenAiRecordingGateway(RepairAssistantProperties properties, RestClient.Builder builder, ObjectMapper objectMapper) {
         this.properties = properties;

@@ -17,6 +17,28 @@ import tools.jackson.databind.ObjectMapper;
 
 class OpenAiRecordingGatewayTests {
     @TempDir Path directory;
+    @Test void windowDiarizationUsesIndependentModelAndDoesNotNormalizeExtraSpeakers() {
+        var builder=RestClient.builder();
+        var server=MockRestServiceServer.bindTo(builder).build();
+        var mockBuilder=org.mockito.Mockito.spy(builder);
+        org.mockito.Mockito.doReturn(mockBuilder).when(mockBuilder).requestFactory(org.mockito.ArgumentMatchers.any());
+        var recording=new RepairAssistantProperties.Recording("unused",100,1,1,"gpt-live-transcribe",0.75,1,15,30);
+        var properties=new RepairAssistantProperties(null,null,null,new RepairAssistantProperties.OpenAi("https://recording.test/v1","test-key","chat","unused",1),recording,null);
+        server.expect(requestTo("https://recording.test/v1/audio/transcriptions")).andExpect(request -> {
+            String body=((MockClientHttpRequest)request).getBodyAsString();
+            assertTrue(body.contains("gpt-4o-transcribe-diarize"));
+            org.junit.jupiter.api.Assertions.assertFalse(body.contains("gpt-live-transcribe"));
+            assertTrue(body.contains("diarized_json")); assertTrue(body.contains("auto"));
+            assertTrue(body.contains("known_speaker_names[]")); assertTrue(body.contains("session_A"));
+            org.junit.jupiter.api.Assertions.assertFalse(body.contains("name=\"temperature\""));
+        }).andRespond(withSuccess("""
+            {"segments":[{"id":"s1","start":0,"end":1,"speaker":"session_A","text":"first"},{"id":"s2","start":1,"end":2,"speaker":"third","text":"extra"}]}
+            """,MediaType.APPLICATION_JSON));
+        var gateway=new OpenAiRecordingGateway(properties,mockBuilder,new ObjectMapper());
+        var result=gateway.diarize(new byte[96044],"ja-JP",java.util.Map.of("session_A","data:audio/wav;base64,AAA="));
+        assertEquals("third",result.get(1).speaker()); assertEquals(1000,result.get(1).startMs());
+        server.verify();
+    }
 
     @Test void requiresExtractedDescriptionsToUseTheTranscriptionLanguage() {
         var builder = RestClient.builder();
