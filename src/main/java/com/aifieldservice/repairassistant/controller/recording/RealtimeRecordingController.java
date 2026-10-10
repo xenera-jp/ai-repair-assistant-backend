@@ -15,6 +15,9 @@ public class RealtimeRecordingController {
     public RealtimeRecordingService.Started start(@PathVariable String fileId) { return service.start(fileId); }
     @PostMapping("/recording-realtime-sessions/{id}/frames")
     public RealtimeRecordingService.Ack append(@PathVariable String id, @RequestBody Frame frame) { return service.append(id, frame.startSample(), frame.audio()); }
+    @PostMapping("/recording-realtime-sessions/{id}/frame-batches")
+    public RealtimeRecordingService.BatchAck appendBatch(@PathVariable String id,
+            @RequestBody java.util.List<RealtimeRecordingService.Frame> frames) { return service.appendBatch(id, frames); }
     @PostMapping("/recording-realtime-sessions/{id}/finish")
     public RecordingViews.Batch finish(@PathVariable String id) { return service.finish(id); }
     @PostMapping("/recording-files/{fileId}/diarization-retries")

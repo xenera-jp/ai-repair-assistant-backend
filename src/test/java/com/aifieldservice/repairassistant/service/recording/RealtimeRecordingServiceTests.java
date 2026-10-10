@@ -30,6 +30,7 @@ class RealtimeRecordingServiceTests {
     private final List<Map<String, ?>> sent = new ArrayList<>();
     private final ObjectMapper json = new ObjectMapper();
     private String id;
+    private DiarizationWindows.State state;
 
     @BeforeEach void setup() {
         recordings = mock(RecordingService.class); gateway = mock(OpenAiRealtimeGateway.class); stream = mock(RecordingTranscriptionStream.class);
@@ -45,7 +46,7 @@ class RealtimeRecordingServiceTests {
         }).when(gateway).connect(eq("ja-JP"), any(), any());
         var properties = new RepairAssistantProperties(null, null, null, null, null);
         var windows=mock(DiarizationWindows.class);
-        var state=mock(DiarizationWindows.State.class);
+        state=mock(DiarizationWindows.State.class);
         when(windows.create(anyString(),anyString(),anyString(),any(),any())).thenReturn(state);
         when(state.finish()).thenReturn(java.util.concurrent.CompletableFuture.completedFuture(null));
         service = new RealtimeRecordingService(recordings, gateway, stream, properties, windows);
@@ -113,5 +114,57 @@ class RealtimeRecordingServiceTests {
         verify(recordings, never()).saveRealtimeSegment(anyString(),anyString(),anyInt(),anyLong(),anyLong(),anyString(),anyString());
         verify(recordings, never()).retryExtraction(anyString());
         assertThrows(ResponseStatusException.class, () -> service.append(id,0,tone(0,120)));
+    }
+    private List<RealtimeRecordingService.Frame> frames(long start, int count) {
+        var result = new ArrayList<RealtimeRecordingService.Frame>();
+        for (int i=0; i<count; i++) result.add(new RealtimeRecordingService.Frame(start+i*2400L, tone(i,120)));
+        return result;
+    }
+    @Test void batchPreservesIndividualFramesAndLostResponseRetriesAreIdempotent() {
+        var frames = frames(0,5);
+        assertEquals(new RealtimeRecordingService.BatchAck(12000,false),service.appendBatch(id,frames));
+        assertEquals(5,sent.size());
+        assertEquals(new RealtimeRecordingService.BatchAck(12000,false),service.appendBatch(id,frames));
+        assertEquals(5,sent.size());
+        assertEquals(14400,service.appendBatch(id,frames(12000,1)).nextSample());
+        assertEquals(6,sent.size());
+    }
+    @Test void validatesEntireBatchBeforeSendingAnyAudio() {
+        assertThrows(ResponseStatusException.class,()->service.appendBatch(id,frames(0,6)));
+        assertThrows(ResponseStatusException.class,()->service.appendBatch(id,List.of()));
+        assertThrows(ResponseStatusException.class,()->service.appendBatch(id,List.of(
+                new RealtimeRecordingService.Frame(0,tone(0,120)),new RealtimeRecordingService.Frame(2400,"%%%"))));
+        assertThrows(ResponseStatusException.class,()->service.appendBatch(id,List.of(
+                new RealtimeRecordingService.Frame(0,tone(0,120)),new RealtimeRecordingService.Frame(2500,tone(1,120)))));
+        assertTrue(sent.isEmpty());
+    }
+    @Test void partialBatchAcknowledgesAcceptedPrefixAndRetriesDoNotDuplicateIt() {
+        when(state.full()).thenReturn(false,true);
+        var frames=frames(0,3);
+        var ack=service.appendBatch(id,frames);
+        assertEquals(new RealtimeRecordingService.BatchAck(2400,true),ack);
+        assertEquals(1,sent.size());
+        assertEquals(ack,service.appendBatch(id,frames));
+        assertEquals(1,sent.size());
+        when(state.full()).thenReturn(false);
+        assertEquals(new RealtimeRecordingService.BatchAck(7200,false),service.appendBatch(id,frames.subList(1,3)));
+        assertEquals(3,sent.size());
+    }
+    @Test void zeroProgressBackpressureCanBeRetriedAfterCapacityReturns() {
+        when(state.full()).thenReturn(true);
+        var frames=frames(0,2);
+        assertEquals(new RealtimeRecordingService.BatchAck(0,true),service.appendBatch(id,frames));
+        assertTrue(sent.isEmpty());
+        when(state.full()).thenReturn(false);
+        assertEquals(new RealtimeRecordingService.BatchAck(4800,false),service.appendBatch(id,frames));
+        assertEquals(2,sent.size());
+    }
+    @Test void batchRechecksFileVisibilityAndCancellation() {
+        when(recordings.getFile("file")).thenThrow(new ResponseStatusException(org.springframework.http.HttpStatus.NOT_FOUND));
+        assertThrows(ResponseStatusException.class,()->service.appendBatch(id,frames(0,1)));
+        assertTrue(sent.isEmpty());
+        reset(recordings);
+        service.cancel(id);
+        assertThrows(ResponseStatusException.class,()->service.appendBatch(id,frames(0,1)));
     }
 }
