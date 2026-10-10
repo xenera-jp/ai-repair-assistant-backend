@@ -9,7 +9,7 @@ Spring Boot backend and RAG-Core for the AI repair assistant.
 - 实时转写使用 `OPENAI_TRANSCRIPTION_MODEL`（默认 `gpt-live-transcribe`）；分离独立使用 `OPENAI_DIARIZATION_MODEL`（默认 `gpt-4o-transcribe-diarize`）；角色识别继续使用 `OPENAI_CHAT_MODEL`。
 - 部署环境如果仍配置文件 diarize 模型，需要将 `OPENAI_TRANSCRIPTION_MODEL` 配置为支持实时转写的模型并重启后端。代码不替换配置值，不修改持久化环境文件。
 - 启动时执行 V19 和 V20 迁移；V20 保存窗口标识、时间、重叠、版本、重试状态及局部模型结果。上传、恢复和重试均不会调用整文件转写。
-- 浏览器需要 HTTPS 或 localhost、AudioWorklet 和正确的跨源音频 CORS；首版禁止实时模式拖动和倍速。
+- 浏览器在前端解码录音文件，按播放位置发送 24kHz 单声道 PCM；文件实时模拟支持 HTTP，无需 AudioWorklet 或麦克风权限。跨源音频仍需正确的 CORS；首版禁止实时模式拖动和倍速。开始前需读取并解码完整文件，长录音会增加准备时间和浏览器内存占用。
 - 窗口目标 12 秒，最长 15 秒，重叠 3 秒；每个会话按源时间串行处理，最多积压 3 窗，达到限制同时暂停播放和采集。DEMO 最长两小时、最多 10000 个确认片段。
 - A/B 通过模型结果的重叠时间与文字关联；可从清晰片段选取 2～10 秒参考音频。缺少可靠共同片段时保留未知，额外说话人不强行并入 A/B。参考只在本次会话内保存。
 - 窗口失败自动最多重试 3 次，再禁用总结并提供“重试说话人分离”；普通暂停保持会话，连接失效或空闲五分钟需要重头演示。重启后不透明续接，不提供失败范围的自动部分总结。
