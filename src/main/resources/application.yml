@@ -63,7 +63,8 @@ repair-assistant:
     max-file-size-bytes: ${RECORDING_MAX_FILE_SIZE_BYTES:104857600}
     max-files-per-batch: ${RECORDING_MAX_FILES_PER_BATCH:10}
     retention-days: ${RECORDING_RETENTION_DAYS:30}
-    transcription-model: ${OPENAI_TRANSCRIPTION_MODEL:gpt-4o-transcribe-diarize}
+    transcription-model: ${OPENAI_TRANSCRIPTION_MODEL:gpt-live-transcribe}
+    diarization-model: ${OPENAI_DIARIZATION_MODEL:gpt-4o-transcribe-diarize}
     speaker-role-confidence-threshold: ${SPEAKER_ROLE_CONFIDENCE_THRESHOLD:0.75}
     worker-concurrency: ${RECORDING_WORKER_CONCURRENCY:2}
     connect-timeout-seconds: ${OPENAI_RECORDING_CONNECT_TIMEOUT_SECONDS:15}

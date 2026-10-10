@@ -45,6 +45,13 @@ public class RecordingTranscriptionStream {
         send(batchId, "resource-deleted", Map.of("fileId", fileId));
     }
 
+    public void publishFinal(String batchId, String fileId, String itemId) {
+        send(batchId, "transcript-final", Map.of("fileId", fileId, "segmentId", itemId));
+    }
+    public void publishDraft(String batchId,String fileId,String itemId,long startMs,long endMs,String text) {
+        send(batchId,"draft",Map.of("fileId",fileId,"segmentId",itemId,"startMs",startMs,"endMs",endMs,"text",text));
+    }
+
     private void send(String batchId, String eventName, Object data) {
         var current = emitters.get(batchId);
         if (current == null) return;

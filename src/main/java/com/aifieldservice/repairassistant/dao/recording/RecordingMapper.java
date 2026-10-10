@@ -6,14 +6,22 @@ import com.aifieldservice.repairassistant.domain.recording.model.RecordingRows;
 
 /** MyBatis access point for recording batches, transcripts and extracted issues. */
 public interface RecordingMapper {
+    @org.apache.ibatis.annotations.Update("UPDATE recording_transcript_segment SET deleted=TRUE,deleted_at=CURRENT_TIMESTAMP(6),delete_reason='DIARIZATION_REVISION' WHERE id=#{id} AND deleted=FALSE")
+    int retireSegment(@Param("id") long id);
+    @org.apache.ibatis.annotations.Update("UPDATE recording_transcript_segment SET sequence_no=#{sequence} WHERE id=#{id} AND deleted=FALSE")
+    int orderSegment(@Param("id") long id,@Param("sequence") int sequence);
     int insertBatch(@Param("batchKey") String batchKey, @Param("languageCode") String languageCode,
             @Param("status") String status);
     RecordingRows.Batch findBatch(@Param("batchKey") String batchKey);
     RecordingRows.Batch findBatchIncludingDeleted(@Param("batchKey") String batchKey);
     RecordingRows.Batch findBatchById(@Param("batchId") long batchId);
+    RecordingRows.Batch findBatchByIdForUpdate(@Param("batchId") long batchId);
     int updateBatchStatus(@Param("batchId") long batchId, @Param("status") String status,
             @Param("error") String error);
     int incrementExtractionRevision(@Param("batchId") long batchId);
+    int claimExtraction(@Param("batchId") long batchId);
+    int markRealtime(@Param("fileId") long fileId);
+    boolean isRealtime(@Param("fileId") long fileId);
 
     int insertFile(@Param("fileKey") String fileKey, @Param("batchId") long batchId,
             @Param("displayOrder") int displayOrder, @Param("originalName") String originalName,
@@ -44,6 +52,8 @@ public interface RecordingMapper {
     int updateSpeakerRole(@Param("fileId") long fileId, @Param("speakerLabel") String speakerLabel,
             @Param("roleCode") String roleCode, @Param("confidence") Double confidence,
             @Param("source") String source);
+    int updateSegmentSpeaker(@Param("fileId") long fileId, @Param("segmentKey") String segmentKey,
+            @Param("speakerLabel") String speakerLabel, @Param("roleCode") String roleCode);
 
     int deleteCurrentIssues(@Param("batchId") long batchId, @Param("revision") int revision);
     int insertIssue(@Param("issueKey") String issueKey, @Param("batchId") long batchId,

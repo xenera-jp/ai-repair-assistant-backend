@@ -41,7 +41,7 @@ class RecordingControllerTests {
 
     @Test void rejectsMultipleFiles() throws Exception {
         RecordingViews.Batch batch = batch();
-        when(service.create(anyList(), org.mockito.ArgumentMatchers.eq("zh-CN"))).thenReturn(batch);
+        when(service.createRealtime(anyList(), org.mockito.ArgumentMatchers.eq("zh-CN"))).thenReturn(batch);
         MockMultipartFile first = new MockMultipartFile("files", "call.wav", "audio/wav", new byte[]{1,2});
         MockMultipartFile second = new MockMultipartFile("files", "note.mp3", "audio/mpeg", new byte[]{3,4});
 
@@ -52,13 +52,21 @@ class RecordingControllerTests {
 
     @Test void uploadsOneFileAndReturnsBatch() throws Exception {
         RecordingViews.Batch batch = batch();
-        when(service.create(anyList(), org.mockito.ArgumentMatchers.eq("zh-CN"))).thenReturn(batch);
+        when(service.createRealtime(anyList(), org.mockito.ArgumentMatchers.eq("zh-CN"))).thenReturn(batch);
         MockMultipartFile file = new MockMultipartFile("files", "call.wav", "audio/wav", new byte[]{1,2});
 
-        mockMvc.perform(multipart("/api/v1/recording-batches").file(file).param("language", "zh-CN"))
+        mockMvc.perform(multipart("/api/v1/recording-batches").file(file).param("language", "zh-CN").param("realtime","false"))
                 .andExpect(status().isCreated()).andExpect(jsonPath("$.id").value("rb_test"))
-                .andExpect(jsonPath("$.files.length()").value(1));
-        verify(service).create(anyList(), org.mockito.ArgumentMatchers.eq("zh-CN"));
+                .andExpect(jsonPath("$.files.length()").value(1)).andExpect(jsonPath("$.conversationVersion").isString());
+        verify(service).createRealtime(anyList(), org.mockito.ArgumentMatchers.eq("zh-CN"));
+    }
+    @Test void summaryCarriesExplicitConversationVersion() throws Exception {
+        when(service.retryExtraction("rb_test","version")).thenReturn(batch());
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post("/api/v1/recording-batches/rb_test/issue-extractions")
+                .contentType(MediaType.APPLICATION_JSON).content("{\"conversationVersion\":\"version\"}"))
+                .andExpect(status().isAccepted());
+        verify(service).retryExtraction("rb_test","version");
+        org.mockito.Mockito.verify(service,org.mockito.Mockito.never()).retryExtraction("rb_test");
     }
 
     @Test void appliesBusinessRoleToFileSpeaker() throws Exception {
@@ -67,6 +75,13 @@ class RecordingControllerTests {
                 .contentType(MediaType.APPLICATION_JSON).content("{\"roleCode\":\"CUSTOMER_SERVICE\"}"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.id").value("rb_test"));
         verify(service).setSpeakerRole("rf_1", "A", "CUSTOMER_SERVICE");
+    }
+    @Test void correctsAllMembersOfMergedTranscriptRow() throws Exception {
+        when(service.setSegmentSpeakers("rf_1",List.of("s1","s2"),"B")).thenReturn(batch());
+        mockMvc.perform(put("/api/v1/recording-files/rf_1/segments/s1/speaker")
+                .contentType(MediaType.APPLICATION_JSON).content("{\"speakerLabel\":\"B\",\"segmentIds\":[\"s1\",\"s2\"]}"))
+                .andExpect(status().isOk());
+        verify(service).setSegmentSpeakers("rf_1",List.of("s1","s2"),"B");
     }
 
     @Test void deletesRecordingFileIdempotentlyThroughService() throws Exception {

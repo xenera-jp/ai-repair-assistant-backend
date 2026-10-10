@@ -78,11 +78,23 @@ public class RecordingServiceImpl implements RecordingService {
     /** Resume jobs left incomplete by a process restart instead of leaving the UI polling forever. */
     @EventListener(ApplicationReadyEvent.class)
     public void resumeIncompleteTranscriptions() {
-        mapper.listIncompleteFiles().forEach(file -> workers.execute(() -> transcribe(file.fileKey())));
+        mapper.listIncompleteFiles().forEach(file -> {
+            mapper.updateFileStatus(file.id(), "FAILED", "REALTIME_INTERRUPTED", "会话已中断，请重头演示。");
+            mapper.updateBatchStatus(file.batchId(), "FAILED", "会话已中断，请重头演示。");
+        });
     }
 
     @Override @Transactional
     public RecordingViews.Batch create(List<MultipartFile> uploads, String language) {
+        return createUpload(uploads, language);
+    }
+
+    @Override @Transactional
+    public RecordingViews.Batch createRealtime(List<MultipartFile> uploads, String language) {
+        return createUpload(uploads, language);
+    }
+
+    private RecordingViews.Batch createUpload(List<MultipartFile> uploads, String language) {
         if (uploads == null || uploads.isEmpty()) throw bad("请至少选择一个录音文件。");
         if (uploads.size() != 1) throw bad("一次只能上传一个录音文件。");
         String normalizedLanguage = Set.of("zh-CN","ja-JP","AUTO").contains(language) ? language : "AUTO";
@@ -104,17 +116,13 @@ public class RecordingServiceImpl implements RecordingService {
                 String sha = sha256(temporary);
                 Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
                 mapper.insertFile(fileKey, batch.id(), i, safeName(upload.getOriginalFilename()), storageKey,
-                        upload.getContentType() == null ? "application/octet-stream" : upload.getContentType(), upload.getSize(), sha, "UPLOADED");
+                        upload.getContentType() == null ? "application/octet-stream" : upload.getContentType(), upload.getSize(), sha, "PREPARED");
+                mapper.markRealtime(requiredFile(fileKey).id());
                 fileKeys.add(fileKey);
             }
-            mapper.updateBatchStatus(batch.id(), "TRANSCRIBING", null);
+            mapper.updateBatchStatus(batch.id(), "PREPARED", null);
         } catch (ResponseStatusException e) { throw e; }
         catch (Exception e) { throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "录音保存失败。", e); }
-        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-            @Override public void afterCommit() {
-                fileKeys.forEach(fileKey -> workers.execute(() -> transcribe(fileKey)));
-            }
-        });
         return getBatch(batchKey);
     }
 
@@ -124,51 +132,6 @@ public class RecordingServiceImpl implements RecordingService {
         if (!EXTENSIONS.contains(extension(file.getOriginalFilename()))) throw bad("不支持的录音格式: " + safeName(file.getOriginalFilename()));
     }
 
-    private void transcribe(String fileKey) {
-        RecordingRows.File file = mapper.findFile(fileKey);
-        if (file == null) return;
-        mapper.updateFileStatus(file.id(), "TRANSCRIBING", null, null);
-        try {
-            RecordingRows.Batch batch = batchById(file.batchId());
-            mapper.softDeleteSegments(file.id(), "TRANSCRIPTION_REPLACED");
-            AtomicInteger streamedSequence = new AtomicInteger();
-            List<OpenAiRecordingGateway.Transcript> result = openAi.transcribe(resolveContent(file), file.originalName(), file.contentType(), "AUTO",
-                    new OpenAiRecordingGateway.TranscriptStreamListener() {
-                        @Override public void onDelta(OpenAiRecordingGateway.TranscriptDelta delta) {
-                            RecordingRows.File current = mapper.findFileIncludingDeleted(file.fileKey());
-                            if(current!=null&&!current.deleted()) transcriptionStream.publishDelta(batch.batchKey(), file.fileKey(), delta.segmentId(), delta.delta());
-                        }
-                        @Override public void onSegment(OpenAiRecordingGateway.Transcript segment) {
-                            RecordingRows.File current = mapper.findFileIncludingDeleted(file.fileKey());
-                            boolean deleted = current == null || current.deleted();
-                            mapper.insertSegment(key("rs"), file.id(), streamedSequence.getAndIncrement(), segment.speaker(),
-                                    segment.startMs(), segment.endMs(), segment.text(), segment.providerId(), deleted);
-                            if (!deleted) publishBatch(batch.batchKey());
-                        }
-                    });
-            boolean deleted = Boolean.TRUE.equals(transactions.execute(status -> {
-                RecordingRows.File current = mapper.findFileIncludingDeletedForUpdate(file.fileKey());
-                boolean removed = current == null || current.deleted();
-                mapper.softDeleteSegments(file.id(), removed ? "FILE_DELETED" : "TRANSCRIPTION_REPLACED");
-                int i=0;
-                for (var s : result) mapper.insertSegment(key("rs"), file.id(), i++, s.speaker(),
-                        s.startMs(), s.endMs(), s.text(), s.providerId(), removed);
-                mapper.updateFileStatus(file.id(), removed ? "COMPLETED_AFTER_DELETE" : "COMPLETED", null, null);
-                return removed;
-            }));
-            if (deleted) return;
-            inferRoles(file.id(), batch.languageCode());
-        } catch (Exception e) {
-            RecordingRows.File current = mapper.findFileIncludingDeleted(file.fileKey());
-            boolean deleted = current == null || current.deleted();
-            mapper.updateFileStatus(file.id(), deleted ? "FAILED_AFTER_DELETE" : "FAILED",
-                    openAi.enabled() ? "TRANSCRIPTION_FAILED" : "PROVIDER_NOT_CONFIGURED", concise(e));
-            if (deleted) return;
-        }
-        refreshBatch(file.batchId());
-        publishBatch(batchById(file.batchId()).batchKey());
-    }
-
     private void publishBatch(String batchKey) {
         try { transcriptionStream.publishBatch(batchKey, view(requiredBatch(batchKey))); }
         catch (Exception ignored) { /* Browser delivery must not fail the persisted background job. */ }
@@ -176,6 +139,7 @@ public class RecordingServiceImpl implements RecordingService {
 
     private void inferRoles(long fileId, String language) {
         List<RecordingRows.Segment> segments = mapper.listSegments(fileId);
+        if (mapper.isRealtime(fileId)) segments = segments.stream().filter(s -> Set.of("A", "B").contains(s.speakerLabel())).toList();
         Set<String> valid = new HashSet<>(); segments.forEach(s -> valid.add(s.speakerLabel()));
         try {
             for (var role : openAi.inferRoles(segments, language)) {
@@ -189,18 +153,16 @@ public class RecordingServiceImpl implements RecordingService {
     private synchronized void refreshBatch(long batchId) {
         RecordingRows.Batch batch = batchById(batchId);
         List<RecordingRows.File> files = mapper.listFiles(batchId);
-        if (files.stream().anyMatch(f -> "TRANSCRIBING".equals(f.status()) || "UPLOADED".equals(f.status()))) return;
+        if (files.stream().anyMatch(f -> Set.of("PREPARED", "TRANSCRIBING", "UPLOADED", "REALTIME_TRANSCRIBING", "ROLE_INFERENCE", "DIARIZATION_FAILED").contains(f.status()))) return;
         long successes = files.stream().filter(f -> "COMPLETED".equals(f.status())).count();
         if (successes == 0) { mapper.updateBatchStatus(batchId, "FAILED", "全部文件转写失败。"); return; }
         mapper.updateBatchStatus(batchId, successes == files.size() ? "TRANSCRIBED" : "PARTIAL_SUCCESS", null);
-        if (batch.extractionRevision() == 0) extract(batch.batchKey());
     }
 
-    private synchronized void extract(String batchKey) {
+    private void extract(String batchKey) {
         RecordingRows.Batch batch = requiredBatch(batchKey);
         List<RecordingRows.Segment> segments = mapper.listBatchSegments(batch.id());
         if (segments.isEmpty()) throw new ResponseStatusException(HttpStatus.CONFLICT, "没有可用于提取的转写原文。");
-        mapper.updateBatchStatus(batch.id(), "EXTRACTING", null);
         try {
             List<OpenAiRecordingGateway.Extracted> original = openAi.extract(segments, batch.languageCode());
             var match = identifierMatching.match(original, segments);
@@ -232,21 +194,139 @@ public class RecordingServiceImpl implements RecordingService {
     }
 
     @Override @Transactional public RecordingViews.Batch getBatch(String batchId) { RecordingRows.Batch batch=requiredBatch(batchId);reconcileAcceptedErrorCodes(batch);return view(requiredBatch(batchId)); }
+
+    @Override @Transactional public RecordingViews.Batch setSegmentSpeaker(String fileId, String segmentId, String speaker) {
+        if (speaker == null || !Set.of("A", "B", "UNKNOWN", "MIXED").contains(speaker)) throw bad("无效的说话人标签。");
+        var file = mapper.findFileIncludingDeletedForUpdate(fileId);
+        if (file == null || file.deleted()) throw notFound("录音不存在。");
+        var batch = mapper.findBatchByIdForUpdate(file.batchId());
+        if (batch == null || batch.deleted()) throw notFound("录音不存在。");
+        if (!mapper.isRealtime(file.id()) || !"COMPLETED".equals(file.status())
+                || !Set.of("TRANSCRIBED", "PARTIAL_SUCCESS", "EXTRACTION_FAILED").contains(batch.status()) || batch.extractionRevision() != 0)
+            throw conflict("请在转写和角色识别完成后、对话总结之前修正说话人。");
+        String role = Set.of("A", "B").contains(speaker) ? mapper.listSegments(file.id()).stream()
+                .filter(s -> speaker.equals(s.speakerLabel()) && s.speakerRoleCode() != null)
+                .map(RecordingRows.Segment::speakerRoleCode).findFirst().orElse("UNKNOWN") : "UNKNOWN";
+        if (mapper.updateSegmentSpeaker(file.id(), segmentId, speaker, role) != 1) throw notFound("转写片段不存在。");
+        return getBatch(batch.batchKey());
+    }
+    @Override @Transactional public RecordingViews.Batch setSegmentSpeakers(String fileId,List<String> segmentIds,String speaker) {
+        if(segmentIds==null || segmentIds.isEmpty() || segmentIds.size()>10000) throw bad("请选择有效的转写片段。");
+        RecordingViews.Batch result=null;
+        for(String id:segmentIds.stream().distinct().toList()) result=setSegmentSpeaker(fileId,id,speaker);
+        return result;
+    }
     @Override public RecordingViews.Batch retryTranscription(String fileId) {
-        RecordingRows.File file=requiredFile(fileId); if (!"FAILED".equals(file.status())) throw conflict("只有失败文件可以重试。");
-        mapper.updateFileStatus(file.id(), "UPLOADED", null, null);
-        mapper.updateBatchStatus(file.batchId(), "TRANSCRIBING", null);
-        workers.execute(() -> transcribe(fileId)); return getBatch(batchById(file.batchId()).batchKey());
+        requiredFile(fileId);
+        throw conflict("请通过重头演示重试，不再使用整文件转写。");
     }
     @Override public RecordingViews.Batch retryExtraction(String batchId) {
         RecordingRows.Batch batch = requiredBatch(batchId);
-        mapper.updateBatchStatus(batch.id(), "EXTRACTING", null);
-        workers.execute(() -> extract(batchId));
+        if (mapper.listBatchSegments(batch.id()).isEmpty()) throw conflict("没有可用于提取的转写原文。");
+        if (mapper.claimExtraction(batch.id()) != 1) throw conflict("请等待转写和角色识别完成，或当前提取已经开始。");
+        Runnable task=() -> workers.execute(() -> { extract(batchId); publishBatch(batchId); });
+        if(TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override public void afterCommit() { task.run(); }
+            });
+        } else task.run();
         return getBatch(batchId);
     }
-    @Override public RecordingViews.Batch setSpeakerRole(String fileId,String speakerLabel,String roleCode) {
+    @Override @Transactional public RecordingViews.Batch retryExtraction(String batchId,String conversationVersion) {
+        var batch=requiredBatch(batchId);
+        mapper.findBatchByIdForUpdate(batch.id());
+        if(conversationVersion==null || !view(requiredBatch(batchId)).conversationVersion().equals(conversationVersion))
+            throw conflict("对话版本已更新，请刷新后重新点击对话总结。");
+        return retryExtraction(batchId);
+    }
+
+    @Override @Transactional public RecordingViews.Batch beginRealtime(String fileId) {
+        var file = mapper.findFileIncludingDeletedForUpdate(fileId);
+        if (file == null || file.deleted()) throw notFound("录音不存在。");
+        if (!mapper.isRealtime(file.id()) || !"PREPARED".equals(file.status())) throw conflict("实时会话已开始，请重新上传以重头演示。");
+        mapper.softDeleteSegments(file.id(), "REALTIME_RESTART");
+        mapper.updateFileStatus(file.id(), "REALTIME_TRANSCRIBING", null, null);
+        mapper.updateBatchStatus(file.batchId(), "TRANSCRIBING", null);
+        return getBatch(batchById(file.batchId()).batchKey());
+    }
+
+    @Override @Transactional public void saveRealtimeSegment(String fileId, String itemId, int sequence,
+            long startMs, long endMs, String speaker, String text) {
+        var file = mapper.findFileIncludingDeletedForUpdate(fileId);
+        if (file == null) return;
+        boolean removed = file.deleted();
+        if (!removed && !"REALTIME_TRANSCRIBING".equals(file.status())) return;
+        mapper.insertSegment(key("rs"), file.id(), sequence, speaker, startMs, endMs, text, itemId, removed);
+        if (!removed) publishBatch(batchById(file.batchId()).batchKey());
+    }
+
+    @Override public void finishRealtime(String fileId) {
+        var file = requiredFile(fileId);
+        mapper.updateFileStatus(file.id(), "ROLE_INFERENCE", null, null);
+        mapper.updateBatchStatus(file.batchId(), "ROLE_INFERENCE", null);
+        publishBatch(batchById(file.batchId()).batchKey());
+        workers.execute(() -> {
+            inferRoles(file.id(), batchById(file.batchId()).languageCode());
+            transactions.executeWithoutResult(status -> {
+                var current = mapper.findFileIncludingDeletedForUpdate(fileId);
+                if (current == null || current.deleted()) return;
+                boolean empty = mapper.listSegments(file.id()).isEmpty();
+                mapper.updateFileStatus(file.id(), empty ? "FAILED" : "COMPLETED", empty ? "EMPTY_TRANSCRIPT" : null,
+                        empty ? "没有识别到有效文字。" : null);
+                refreshBatch(file.batchId());
+            });
+            publishBatch(batchById(file.batchId()).batchKey());
+        });
+    }
+
+    @Override @Transactional public void replaceConfirmed(String fileId, List<OpenAiRecordingGateway.Transcript> segments) {
+        var file=mapper.findFileIncludingDeletedForUpdate(fileId);
+        if(file==null || file.deleted() || !"REALTIME_TRANSCRIBING".equals(file.status())) return;
+        var existing=new ArrayList<>(mapper.listSegments(file.id()));
+        int sequence=0;
+        for(var s:segments) {
+            var same=existing.stream().filter(old -> old.startMs()==s.startMs() && old.endMs()==s.endMs()
+                    && old.speakerLabel().equals(s.speaker()) && old.originalText().equals(s.text())).findFirst();
+            if(same.isPresent()) {
+                var old=same.get(); if(old.sequenceNo()!=sequence) mapper.orderSegment(old.id(),sequence);
+                existing.remove(old);
+            } else mapper.insertSegment(key("rs"),file.id(),sequence,s.speaker(),s.startMs(),s.endMs(),s.text(),s.providerId(),false);
+            sequence++;
+        }
+        existing.forEach(old -> mapper.retireSegment(old.id()));
+        publishBatch(batchById(file.batchId()).batchKey());
+    }
+    @Override @Transactional public void diarizationFailed(String fileId,String detail) {
+        var file=requiredFile(fileId);
+        if(!"REALTIME_TRANSCRIBING".equals(file.status())) return;
+        mapper.updateFileStatus(file.id(),"DIARIZATION_FAILED","DIARIZATION_FAILED",detail);
+        mapper.updateBatchStatus(file.batchId(),"DIARIZATION_FAILED",detail);
+        publishBatch(batchById(file.batchId()).batchKey());
+    }
+    @Override @Transactional public void resumeDiarization(String fileId) {
+        var file=requiredFile(fileId);
+        if(!"DIARIZATION_FAILED".equals(file.status())) throw conflict("没有待重试的分离窗口。");
+        mapper.updateFileStatus(file.id(),"REALTIME_TRANSCRIBING",null,null);
+        mapper.updateBatchStatus(file.batchId(),"TRANSCRIBING",null);
+        publishBatch(batchById(file.batchId()).batchKey());
+    }
+
+    @Override @Transactional public void failRealtime(String fileId, String detail) {
+        var file = mapper.findFileIncludingDeletedForUpdate(fileId);
+        if (file == null || file.deleted() || !Set.of("REALTIME_TRANSCRIBING", "ROLE_INFERENCE", "DIARIZATION_FAILED").contains(file.status())) return;
+        String safeDetail = detail == null ? "实时会话已中断。" : detail.substring(0, Math.min(1000, detail.length()));
+        mapper.updateFileStatus(file.id(), "FAILED", "REALTIME_INTERRUPTED", safeDetail);
+        mapper.updateBatchStatus(file.batchId(), "FAILED", safeDetail);
+        publishBatch(batchById(file.batchId()).batchKey());
+    }
+    @Override @Transactional public RecordingViews.Batch setSpeakerRole(String fileId,String speakerLabel,String roleCode) {
         if (!ROLES.contains(roleCode)) throw bad("无效的说话人角色。");
-        RecordingRows.File file=requiredFile(fileId);
+        RecordingRows.File file=mapper.findFileIncludingDeletedForUpdate(fileId);
+        if(file==null || file.deleted()) throw notFound("录音不存在。");
+        var batch=mapper.findBatchByIdForUpdate(file.batchId());
+        if(batch==null || batch.deleted()) throw notFound("录音不存在。");
+        if(!"COMPLETED".equals(file.status()) || !Set.of("TRANSCRIBED","PARTIAL_SUCCESS","EXTRACTION_FAILED").contains(batch.status())
+                || batch.extractionRevision()!=0) throw conflict("请在处理完成后、对话总结前修改角色。");
         if (mapper.updateSpeakerRole(file.id(),speakerLabel,roleCode,1.0,"MANUAL")==0) throw notFound("说话人不存在。");
         return view(batchById(file.batchId()));
     }
@@ -321,7 +401,7 @@ public class RecordingServiceImpl implements RecordingService {
         Map<String,List<RecordingViews.Evidence>> evidence=new HashMap<>();
         if(batch.extractionRevision()>0) for(var e:mapper.listEvidence(batch.id(),batch.extractionRevision())) evidence.computeIfAbsent(e.issueKey(),k->new ArrayList<>()).add(new RecordingViews.Evidence(e.fileKey(),e.originalName(),e.segmentKey(),e.speakerLabel(),e.speakerRoleCode(),e.startMs(),e.endMs(),e.originalText()));
         return new RecordingViews.Batch(batch.batchKey(),batch.languageCode(),batch.status(),batch.extractionRevision(),batch.extractionError(),
-            files.stream().map(f->new RecordingViews.File(f.fileKey(),f.originalName(),f.contentType(),f.sizeBytes(),f.status(),f.errorCode(),f.errorDetail(),mapper.listSegments(f.id()).stream().map(s->new RecordingViews.Segment(s.segmentKey(),s.sequenceNo(),s.speakerLabel(),s.speakerRoleCode(),s.speakerRoleConfidence(),s.speakerRoleSource(),s.startMs(),s.endMs(),s.originalText())).toList())).toList(),
+            files.stream().map(f->new RecordingViews.File(f.fileKey(),f.originalName(),f.contentType(),f.sizeBytes(),f.status(),f.errorCode(),f.errorDetail(),mapper.listSegments(f.id()).stream().map(s->new RecordingViews.Segment(s.segmentKey(),s.sequenceNo(),s.speakerLabel(),s.speakerRoleCode(),s.speakerRoleConfidence(),s.speakerRoleSource(),s.startMs(),s.endMs(),s.originalText())).toList(),mapper.isRealtime(f.id()))).toList(),
             issues.stream().map(i->new RecordingViews.Issue(i.issueKey(),i.issueType(),i.content(),i.originalContent(),i.editedByUser(),i.deleted(),i.versionNo(),evidence.getOrDefault(i.issueKey(),List.of()),correctionView(corrections.get(i.id())))).toList(),batch.createdAt());
     }
     private RecordingViews.Correction correctionView(RecordingRows.Correction c){if(c==null)return null;List<String> ids=new ArrayList<>();try{json.readTree(c.evidenceSegmentIdsJson()).forEach(n->ids.add(n.asText()));}catch(Exception ignored){}String source=EquipmentIdentifierMatchingService.identifierSource(new OpenAiRecordingGateway.Extracted(c.fieldType(),c.sourceText()==null?c.originalValue():c.sourceText(),ids));return new RecordingViews.Correction(c.status(),c.originalValue(),c.suggestedValue(),c.modelValue(),source,c.ruleScore(),c.reason(),ids);}
