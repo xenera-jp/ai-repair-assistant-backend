@@ -6,6 +6,7 @@ import java.util.ArrayDeque;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
@@ -26,6 +27,8 @@ import jakarta.annotation.PreDestroy;
 public class RealtimeRecordingService {
     public record Started(String sessionId, RecordingViews.Batch batch) {}
     public record Ack(long nextSample) {}
+    public record Frame(long startSample, String audio) {}
+    public record BatchAck(long nextSample, boolean blocked) {}
     public record Turn(int sequence, long startMs, long endMs, String speaker) {}
     private final RecordingService recordings;
     private final OpenAiRealtimeGateway gateway;
@@ -66,6 +69,12 @@ public class RealtimeRecordingService {
         return session.append(startSample, audio);
     }
 
+    public BatchAck appendBatch(String id, List<Frame> frames) {
+        Session session = required(id);
+        recordings.getFile(session.fileId);
+        return session.appendBatch(frames);
+    }
+
     public RecordingViews.Batch finish(String id) {
         Session session = required(id);
         session.finish();
@@ -100,6 +109,8 @@ public class RealtimeRecordingService {
         boolean finishing;
         long samples, turnStart, previousStart = -1;
         String previousAudio;
+        List<Frame> previousBatch;
+        BatchAck previousBatchAck;
         int nextSequence, committed, finalized;
         long silenceSamples;
         boolean turnSpeech;
@@ -118,6 +129,41 @@ public class RealtimeRecordingService {
                     detail -> { if(!closed) recordings.diarizationFailed(fileId,detail); });
         }
 
+        synchronized BatchAck appendBatch(List<Frame> frames) {
+            if (closed || finishing) throw new ResponseStatusException(HttpStatus.CONFLICT, "实时输入已结束。");
+            if (frames == null || frames.isEmpty() || frames.size() > 5)
+                throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, "每次最多发送5个音频帧。");
+            // A lost HTTP response may retry a partially accepted batch. Never resend accepted audio.
+            if (frames.equals(previousBatch) && previousBatchAck.nextSample() == samples) return previousBatchAck;
+            long expected = samples;
+            for (Frame frame : frames) {
+                if (frame == null || frame.startSample() != expected)
+                    throw new ResponseStatusException(HttpStatus.CONFLICT, "音频帧顺序不一致，请重新演示。");
+                byte[] bytes;
+                try {
+                    if (frame.audio() == null || frame.audio().length() > 6400) throw new IllegalArgumentException();
+                    bytes = Base64.getDecoder().decode(frame.audio());
+                    if (bytes.length == 0 || bytes.length > 4800 || bytes.length % 2 != 0) throw new IllegalArgumentException();
+                } catch (IllegalArgumentException e) {
+                    throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, "音频帧必须为不超过100毫秒的24kHz PCM16。");
+                }
+                expected += bytes.length / 2;
+            }
+            long before = samples;
+            boolean blocked = false;
+            for (Frame frame : frames) {
+                try { append(frame.startSample(), frame.audio()); }
+                catch (ResponseStatusException e) {
+                    if (e.getStatusCode() != HttpStatus.TOO_MANY_REQUESTS) throw e;
+                    blocked = true;
+                    break;
+                }
+            }
+            BatchAck ack = new BatchAck(samples, blocked);
+            // Zero-progress backpressure must be retried, not cached forever.
+            if (samples > before) { previousBatch = List.copyOf(frames); previousBatchAck = ack; }
+            return ack;
+        }
         synchronized Ack append(long start, String audio) {
             if (closed || finishing) throw new ResponseStatusException(HttpStatus.CONFLICT, "实时输入已结束。");
             if (start == previousStart && audio != null && audio.equals(previousAudio)) return new Ack(samples);
