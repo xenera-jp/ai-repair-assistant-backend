@@ -185,12 +185,14 @@ public class ProblemUnderstandingServiceImpl implements ProblemUnderstandingServ
         // LLM 仅用于“没有达到规则阈值”的受控分类兜底。
         Optional<SemanticProblemUnderstandingResponse> semantic = sufficiency.shouldInvokeLlmForClassification()
                 && semanticProblemUnderstandingService.enabled()
-                ? semanticProblemUnderstandingService.understand(text, language, problemCatalog.all())
+                ? semanticProblemUnderstandingService.understand(text, language, problemCatalog.all().stream()
+                        .filter(definition -> definition.supportsModel(model)).toList())
                 : Optional.empty();
         Optional<ProblemTypeDefinition> semanticType = semantic
                 .filter(value -> !sufficiency.classificationSufficient())
                 .filter(value -> !"UNCLASSIFIED".equals(value.problemTypeCode()))
-                .flatMap(value -> problemCatalog.findByCode(value.problemTypeCode()));
+                .flatMap(value -> problemCatalog.findByCode(value.problemTypeCode()))
+                .filter(definition -> definition.supportsModel(model));
         if (semantic.isPresent()) {
             // 模型只能补充规则遗漏字段；允许基于整段语义归纳，不要求逐字证据匹配。
             fields = mergeSemanticFields(fields, semantic.get(), japanese);

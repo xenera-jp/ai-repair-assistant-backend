@@ -60,6 +60,7 @@ public class ProblemCatalogServiceImpl implements ProblemCatalogService {
 
         // 低于 35 分视为“没有足够信号”，宁可返回未分类，也不强行匹配一个类别。
         return all().stream()
+                .filter(definition -> definition.supportsModel(normalizedModel))
                 .map(definition -> score(definition, normalizedModel, normalizedError, normalizedText))
                 .filter(match -> match.score() >= 35)
                 .sorted(Comparator.comparingInt(ProblemMatch::score).reversed()
@@ -98,9 +99,9 @@ public class ProblemCatalogServiceImpl implements ProblemCatalogService {
         // 错误码是高辨识度的结构化信号，权重显著高于普通别名。
         if (!errorCode.isBlank()
                 && definition.errorCodes().stream()
-                        .map(ErrorCodeDefinition::code)
-                        .map(this::normalize)
-                        .anyMatch(errorCode::equals)) {
+                        .anyMatch(error -> normalize(error.code()).equals(errorCode)
+                                && (model.isBlank() || error.models().isEmpty()
+                                        || error.models().stream().map(this::normalize).anyMatch(model::equals)))) {
             score += 55;
             signals.add("错误码匹配");
         }
