@@ -35,6 +35,11 @@ public interface ProblemCatalogService {
             List<String> modelScopes,
             List<ErrorCodeDefinition> errorCodes,
             List<ClarificationDefinition> clarifications) {
+        /** Empty scopes are unrestricted; an unknown model does not exclude categories. */
+        public boolean supportsModel(String model) {
+            return model == null || model.isBlank() || modelScopes.isEmpty()
+                    || modelScopes.stream().anyMatch(scope -> scope.strip().equalsIgnoreCase(model.strip()));
+        }
     }
 
     public record ErrorCodeDefinition(String code, List<String> models) {
