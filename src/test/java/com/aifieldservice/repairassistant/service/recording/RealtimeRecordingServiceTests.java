@@ -27,6 +27,8 @@ class RealtimeRecordingServiceTests {
     private RecordingTranscriptionStream stream;
     private RealtimeRecordingService service;
     private Consumer<JsonNode> event;
+    private Consumer<List<com.aifieldservice.repairassistant.integration.openai.OpenAiRecordingGateway.Transcript>> confirmed;
+    private com.aifieldservice.repairassistant.dao.recording.DiarizationWindowMapper windowMapper;
     private final List<Map<String, ?>> sent = new ArrayList<>();
     private final ObjectMapper json = new ObjectMapper();
     private String id;
@@ -47,9 +49,12 @@ class RealtimeRecordingServiceTests {
         var properties = new RepairAssistantProperties(null, null, null, null, null);
         var windows=mock(DiarizationWindows.class);
         state=mock(DiarizationWindows.State.class);
-        when(windows.create(anyString(),anyString(),anyString(),any(),any())).thenReturn(state);
+        when(windows.create(anyString(),anyString(),anyString(),any(),any())).thenAnswer(i -> { confirmed=i.getArgument(3); return state; });
+        var identifiers=mock(com.aifieldservice.repairassistant.dao.knowledge.EquipmentIdentifierMapper.class);
+        when(identifiers.listIdentifiers()).thenReturn(List.of(new com.aifieldservice.repairassistant.dao.knowledge.EquipmentIdentifierMapper.Row("FH1-SSB","[\"E4\"]")));
+        windowMapper=mock(com.aifieldservice.repairassistant.dao.recording.DiarizationWindowMapper.class);
         when(state.finish()).thenReturn(java.util.concurrent.CompletableFuture.completedFuture(null));
-        service = new RealtimeRecordingService(recordings, gateway, stream, properties, windows);
+        service = new RealtimeRecordingService(recordings, gateway, stream, properties, windows,new TranscriptIdentifierProtector(identifiers),windowMapper);
         id = service.start("file").sessionId();
     }
     @AfterEach void cleanup() { service.close(); }
@@ -114,6 +119,26 @@ class RealtimeRecordingServiceTests {
         verify(recordings, never()).saveRealtimeSegment(anyString(),anyString(),anyInt(),anyLong(),anyLong(),anyString(),anyString());
         verify(recordings, never()).retryExtraction(anyString());
         assertThrows(ResponseStatusException.class, () -> service.append(id,0,tone(0,120)));
+    }
+    @Test void lateRealtimeCompletionProtectsAlreadyDiarizedText() {
+        voicedTurn(0); emit(Map.of("type","input_audio_buffer.committed","item_id","first"));
+        confirmed.accept(List.of(new com.aifieldservice.repairassistant.integration.openai.OpenAiRecordingGateway.Transcript("d",0,1200,"A","機種はFH1です。")));
+        emit(Map.of("type","conversation.item.input_audio_transcription.completed","item_id","first","transcript","機種はFH1-SSBです。"));
+        var capture=org.mockito.ArgumentCaptor.forClass(List.class);
+        verify(recordings,times(2)).replaceConfirmed(eq("file"),capture.capture());
+        var rows=(List<com.aifieldservice.repairassistant.integration.openai.OpenAiRecordingGateway.Transcript>)capture.getValue();
+        assertEquals("機種はFH1-SSBです。",rows.getFirst().text()); assertEquals("A",rows.getFirst().speaker());
+        verify(windowMapper).storeIdentifierProtection(eq(id),eq("file"),contains("FH1-SSB"));
+    }
+    @Test void realtimeFirstStaysDraftUntilDiarizationThenOnlyIdentifierIsProtected() {
+        voicedTurn(0); emit(Map.of("type","input_audio_buffer.committed","item_id","first"));
+        emit(Map.of("type","conversation.item.input_audio_transcription.completed","item_id","first","transcript","機種はFH1-SSBです。違う文章。"));
+        verify(recordings,never()).replaceConfirmed(anyString(),anyList());
+        confirmed.accept(List.of(new com.aifieldservice.repairassistant.integration.openai.OpenAiRecordingGateway.Transcript("d",0,1200,"B","機種はFH1です。元の分離文章。")));
+        var capture=org.mockito.ArgumentCaptor.forClass(List.class);
+        verify(recordings).replaceConfirmed(eq("file"),capture.capture());
+        var rows=(List<com.aifieldservice.repairassistant.integration.openai.OpenAiRecordingGateway.Transcript>)capture.getValue();
+        assertEquals("機種はFH1-SSBです。元の分離文章。",rows.getFirst().text()); assertEquals(1200,rows.getFirst().endMs());
     }
     private List<RealtimeRecordingService.Frame> frames(long start, int count) {
         var result = new ArrayList<RealtimeRecordingService.Frame>();

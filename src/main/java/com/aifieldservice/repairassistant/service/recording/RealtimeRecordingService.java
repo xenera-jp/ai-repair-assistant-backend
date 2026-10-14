@@ -17,6 +17,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
 import com.aifieldservice.repairassistant.integration.openai.OpenAiRealtimeGateway;
+import com.aifieldservice.repairassistant.integration.openai.OpenAiRecordingGateway.Transcript;
 import com.aifieldservice.repairassistant.config.RepairAssistantProperties;
 import com.aifieldservice.repairassistant.domain.recording.model.RecordingViews;
 import tools.jackson.databind.JsonNode;
@@ -35,14 +36,17 @@ public class RealtimeRecordingService {
     private final RecordingTranscriptionStream stream;
     private final RepairAssistantProperties properties;
     private final DiarizationWindows diarization;
+    private final TranscriptIdentifierProtector protector;
+    private final com.aifieldservice.repairassistant.dao.recording.DiarizationWindowMapper windowMapper;
     private final Map<String, Session> sessions = new ConcurrentHashMap<>();
     private final java.util.concurrent.Semaphore capacity = new java.util.concurrent.Semaphore(8);
     private final ScheduledExecutorService timer = Executors.newSingleThreadScheduledExecutor();
 
     public RealtimeRecordingService(RecordingService recordings, OpenAiRealtimeGateway gateway,
-            RecordingTranscriptionStream stream, RepairAssistantProperties properties, DiarizationWindows diarization) {
+            RecordingTranscriptionStream stream, RepairAssistantProperties properties, DiarizationWindows diarization,
+            TranscriptIdentifierProtector protector, com.aifieldservice.repairassistant.dao.recording.DiarizationWindowMapper windowMapper) {
         this.recordings = recordings; this.gateway = gateway; this.stream = stream; this.properties = properties;
-        this.diarization = diarization;
+        this.diarization = diarization; this.protector=protector; this.windowMapper=windowMapper;
         timer.scheduleAtFixedRate(() -> sessions.values().forEach(session -> {
             if (System.nanoTime() - session.activity > TimeUnit.MINUTES.toNanos(5)) session.fail("实时会话空闲超时，请重新演示。");
             else try { recordings.getFile(session.fileId); } catch (Exception e) { session.cancel(); }
@@ -57,6 +61,7 @@ public class RealtimeRecordingService {
         Session session = new Session(fileId, batch.id());
         sessions.put(session.id, session);
         try {
+            session.protection=protector.newSession();
             session.connection = gateway.connect(batch.language(), session::event, session::fail);
             if (session.closed) { session.connection.close(); throw new IllegalStateException("实时连接已关闭。"); }
             return new Started(session.id, batch);
@@ -115,16 +120,25 @@ public class RealtimeRecordingService {
         long silenceSamples;
         boolean turnSpeech;
         volatile long confirmedUntil;
+        final Object protectionLock=new Object();
+        final Map<String,Transcript> realtimeText=new HashMap<>();
+        List<Transcript> originalDiarized=List.of();
+        TranscriptIdentifierProtector.ProtectionState protection;
+        String lastAudit;
+        List<Transcript> lastSaved=List.of();
         Session(String fileId, String batchId) {
             this.fileId = fileId; this.batchId = batchId;
             windows=diarization.create(id,fileId,recordings.getBatch(batchId).language(),
                     confirmed -> {
-                        if(closed) return;
-                        recordings.replaceConfirmed(fileId,confirmed);
-                        confirmedUntil=confirmed.stream().mapToLong(s -> s.endMs()).max().orElse(confirmedUntil);
-                        items.forEach((item,turn) -> {
-                            if(completed.contains(item) && turn.endMs()<=confirmedUntil) stream.publishFinal(batchId,fileId,item);
-                        });
+                        synchronized(protectionLock) {
+                            if(closed) return;
+                            originalDiarized=List.copyOf(confirmed);
+                            persistProtected(false);
+                            confirmedUntil=confirmed.stream().mapToLong(Transcript::endMs).max().orElse(confirmedUntil);
+                            items.forEach((item,turn) -> {
+                                if(completed.contains(item) && turn.endMs()<=confirmedUntil+700) stream.publishFinal(batchId,fileId,item);
+                            });
+                        }
                     },
                     detail -> { if(!closed) recordings.diarizationFailed(fileId,detail); });
         }
@@ -231,11 +245,31 @@ public class RealtimeRecordingService {
         private void complete(String itemId, String text) {
             if (completed.contains(itemId)) return;
             Turn turn = items.get(itemId);
-            // Draft is delivered through SSE only; business operations consume diarized confirmed text.
-            if (!text.isBlank() && turn.endMs()>confirmedUntil) stream.publishDraft(batchId,fileId,itemId,turn.startMs(),turn.endMs(),text);
+            synchronized(protectionLock) {
+                if(!text.isBlank()) realtimeText.put(itemId,new Transcript(itemId,turn.startMs(),turn.endMs(),"UNKNOWN",text));
+                // Cache even late completions: diarization may arrive before this final text.
+                if(!originalDiarized.isEmpty()) persistProtected(false);
+            }
+            // Realtime is still an immediate draft; only local identifier patches affect business text.
+            if (!text.isBlank() && turn.endMs()>confirmedUntil+700) stream.publishDraft(batchId,fileId,itemId,turn.startMs(),turn.endMs(),text);
             else stream.publishFinal(batchId,fileId,itemId);
             completed.add(itemId); finalized++;
             if (finishing && finalized == committed) drained.complete(null);
+        }
+
+        private void persistProtected(boolean forceAudit) {
+            if(protection==null || originalDiarized.isEmpty()) return;
+            var realtime=realtimeText.values().stream().sorted(java.util.Comparator.comparingLong(Transcript::startMs)).toList();
+            var result=protection.protect(originalDiarized,realtime);
+            if(!lastSaved.equals(result.segments())) {
+                recordings.replaceConfirmed(fileId,result.segments()); lastSaved=result.segments();
+            }
+            if(!result.candidates().isEmpty() || !result.replacements().isEmpty() || lastAudit!=null) {
+                String audit=new tools.jackson.databind.ObjectMapper().writeValueAsString(Map.of(
+                        "replacements",result.replacements(),"realtimeCandidates",result.candidates()));
+                if(forceAudit || !audit.equals(lastAudit)) windowMapper.storeIdentifierProtection(id,fileId,audit);
+                lastAudit=audit;
+            }
         }
 
         synchronized void finish() {
@@ -248,7 +282,11 @@ public class RealtimeRecordingService {
                         if (error != null) { fail("等待最终转写超时，请重新演示。"); return; }
                         synchronized (this) {
                             if (closed) return;
-                            try { recordings.finishRealtime(fileId); cancel(); }
+                            try {
+                                synchronized(protectionLock) { persistProtected(true); }
+                                items.keySet().forEach(item -> stream.publishFinal(batchId,fileId,item));
+                                recordings.finishRealtime(fileId); cancel();
+                            }
                             catch (Exception e) { fail("实时转写收尾失败。"); }
                         }
                     });

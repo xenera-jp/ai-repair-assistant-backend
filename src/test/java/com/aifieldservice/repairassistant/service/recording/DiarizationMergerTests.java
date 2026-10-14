@@ -56,6 +56,13 @@ class DiarizationMergerTests {
         var result=merger.merge(10000,List.of(s(0,2000,"new_customer","全然冷えていないんです")),Set.of());
         assertEquals("B",result.get(1).speaker());
         var next=merger.merge(10000,List.of(s(4000,6000,"session_A","別の質問です")),Set.of("session_A"));
-        assertTrue(next.stream().anyMatch(segment -> segment.speaker().equals("B") && segment.text().equals("全然冷えていないんです")));
+        assertTrue(next.stream().anyMatch(segment -> segment.speaker().equals("B") && segment.text().equals("庫内が全然冷えていないんです")));
+    }
+    @Test void partialWindowOverlapCannotDeleteWholeEarlierUtterance() {
+        var merger=new DiarizationMerger();
+        merger.merge(0,List.of(s(0,12000,"agent","first half and second half")),Set.of());
+        var result=merger.merge(9000,List.of(s(0,3000,"agent_new","second half")),Set.of());
+        assertEquals(1,result.size()); assertEquals("first half and second half",result.getFirst().text());
+        assertEquals(0,result.getFirst().startMs());
     }
 }
