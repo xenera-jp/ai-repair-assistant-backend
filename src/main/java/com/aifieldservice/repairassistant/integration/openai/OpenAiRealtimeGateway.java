@@ -18,6 +18,17 @@ import tools.jackson.databind.ObjectMapper;
 /** Server-side connection only; no API credentials are sent to the browser. */
 @Component
 public class OpenAiRealtimeGateway {
+    private static final List<String> KEYWORDS=List.of("FH1-AAC","FH1-SSB","RIR1-SSB","HNC-120AA",
+            "E1","E2","E3","E4","E6","E7","E8","E9","E10","CF");
+    private static String prompt(String language) {
+        return "ja-JP".equals(language)
+                ? "設備保守のサポート通話。型式候補: FH1-AAC, FH1-SSB, RIR1-SSB, HNC-120AA。"
+                    + "既知の警報コード: FH1-SSB: E1, E2, E3, E4, E6, E7, E8, E9, E10, CF; RIR1-SSB: E1, E2, E3, E4。"
+                    + "型式やコードは文字・数字を一つずつ読む場合があります。音声にない型式やコードを補わないでください。"
+                : "设备维修客服通话。型号候选: FH1-AAC, FH1-SSB, RIR1-SSB, HNC-120AA。"
+                    + "已知报警码: FH1-SSB: E1, E2, E3, E4, E6, E7, E8, E9, E10, CF; RIR1-SSB: E1, E2, E3, E4。"
+                    + "型号和错误码可能逐字母、数字读出。请按音频转写，不补充未说出的型号或代码。";
+    }
     public interface Connection extends AutoCloseable {
         void send(Map<String, ?> event);
         @Override void close();
@@ -31,6 +42,8 @@ public class OpenAiRealtimeGateway {
         var transcription = new java.util.HashMap<String, Object>();
         transcription.put("model", properties.recording().transcriptionModel());
         transcription.put("delay", "low");
+        transcription.put("prompt",prompt(language));
+        transcription.put("keywords",KEYWORDS);
         if ("ja-JP".equals(language)) transcription.put("languages", List.of("ja"));
         if ("zh-CN".equals(language)) transcription.put("languages", List.of("zh-cn"));
         var input = new java.util.HashMap<String, Object>();

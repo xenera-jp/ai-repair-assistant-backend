@@ -47,7 +47,8 @@ public final class DiarizationMerger {
         }
         var result = new ArrayList<Transcript>();
         for (Transcript old : confirmed) {
-            boolean revised=local.stream().anyMatch(s -> offset+s.startMs()<old.endMs() && offset+s.endMs()>old.startMs());
+            boolean revised=local.stream().anyMatch(s -> offset+s.startMs()<=old.startMs() && offset+s.endMs()>=old.endMs()
+                    && normalize(s.text()).contains(normalize(old.text())));
             if(old.endMs()<=offset || !revised) result.add(old);
         }
         for (Transcript s : local) {
@@ -55,7 +56,8 @@ public final class DiarizationMerger {
             String speaker = mapping.getOrDefault(s.speaker(), "UNKNOWN");
             // Keep boundary utterances whole; only suppress a corroborated duplicate, never cut text by character count.
             boolean duplicate = result.stream().anyMatch(old -> old.endMs() > start && old.startMs() < end
-                    && normalize(old.text()).equals(normalize(s.text())));
+                    && (normalize(old.text()).equals(normalize(s.text()))
+                        || old.startMs()<=start && old.endMs()>=end && normalize(old.text()).contains(normalize(s.text()))));
             if (!duplicate) result.add(new Transcript(s.providerId(), start, end, speaker, s.text()));
         }
         result.sort(Comparator.comparingLong(Transcript::startMs));

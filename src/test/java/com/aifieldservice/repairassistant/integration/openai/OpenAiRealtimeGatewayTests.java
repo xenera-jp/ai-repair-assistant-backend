@@ -19,5 +19,9 @@ class OpenAiRealtimeGatewayTests {
         assertEquals(24000,input.path("format").path("rate").asInt());
         assertTrue(input.path("turn_detection").isNull());
         assertFalse(payload.contains("test-secret"));
+        assertTrue(input.path("transcription").path("prompt").asText().contains("FH1-SSB"));
+        var keywords=input.path("transcription").path("keywords");
+        assertTrue(keywords.toString().contains("HNC-120AA")); assertTrue(keywords.toString().contains("E10"));
+        assertTrue(gateway.configuration("zh-CN").toString().contains("不补充"));
     }
 }
