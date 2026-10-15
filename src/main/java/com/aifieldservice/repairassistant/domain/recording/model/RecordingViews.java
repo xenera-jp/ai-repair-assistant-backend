@@ -19,12 +19,17 @@ public final class RecordingViews {
         }
     }
     public record File(String id, String name, String contentType, long sizeBytes, String status,
-            String errorCode, String errorMessage, List<Segment> segments, boolean realtime) {
+            String errorCode, String errorMessage, List<Segment> segments, boolean realtime, MossPlayback mossPlayback) {
+        public File(String id, String name, String contentType, long sizeBytes, String status,
+                String errorCode, String errorMessage, List<Segment> segments, boolean realtime) {
+            this(id,name,contentType,sizeBytes,status,errorCode,errorMessage,segments,realtime,null);
+        }
         public File(String id, String name, String contentType, long sizeBytes, String status,
                 String errorCode, String errorMessage, List<Segment> segments) {
             this(id, name, contentType, sizeBytes, status, errorCode, errorMessage, segments, false);
         }
     }
+    public record MossPlayback(long positionMs,boolean ended) {}
     public record Segment(String id, int sequenceNo, String speakerLabel, String roleCode,
             Double roleConfidence, String roleSource, long startMs, long endMs, String text) {}
     public record Issue(String id, String type, String content, String originalContent,

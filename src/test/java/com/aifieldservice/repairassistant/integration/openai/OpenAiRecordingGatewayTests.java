@@ -17,7 +17,9 @@ import tools.jackson.databind.ObjectMapper;
 
 class OpenAiRecordingGatewayTests {
     @TempDir Path directory;
-    @Test void windowDiarizationUsesIndependentModelAndDoesNotNormalizeExtraSpeakers() {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"ja-JP", "zh-CN", "AUTO"})
+    void windowDiarizationUsesJapaneseAndIndependentModelAndDoesNotNormalizeExtraSpeakers(String language) {
         var builder=RestClient.builder();
         var server=MockRestServiceServer.bindTo(builder).build();
         var mockBuilder=org.mockito.Mockito.spy(builder);
@@ -29,13 +31,14 @@ class OpenAiRecordingGatewayTests {
             assertTrue(body.contains("gpt-4o-transcribe-diarize"));
             org.junit.jupiter.api.Assertions.assertFalse(body.contains("gpt-live-transcribe"));
             assertTrue(body.contains("diarized_json")); assertTrue(body.contains("auto"));
+            assertTrue(java.util.regex.Pattern.compile("name=\"language\"[^\\r\\n]*\\r\\n(?:[^\\r\\n]+\\r\\n)*\\r\\nja\\r\\n").matcher(body).find());
             assertTrue(body.contains("known_speaker_names[]")); assertTrue(body.contains("session_A"));
             org.junit.jupiter.api.Assertions.assertFalse(body.contains("name=\"temperature\""));
         }).andRespond(withSuccess("""
             {"segments":[{"id":"s1","start":0,"end":1,"speaker":"session_A","text":"first"},{"id":"s2","start":1,"end":2,"speaker":"third","text":"extra"}]}
             """,MediaType.APPLICATION_JSON));
         var gateway=new OpenAiRecordingGateway(properties,mockBuilder,new ObjectMapper());
-        var result=gateway.diarize(new byte[96044],"ja-JP",java.util.Map.of("session_A","data:audio/wav;base64,AAA="));
+        var result=gateway.diarize(new byte[96044],language,java.util.Map.of("session_A","data:audio/wav;base64,AAA="));
         assertEquals("third",result.get(1).speaker()); assertEquals(1000,result.get(1).startMs());
         server.verify();
     }

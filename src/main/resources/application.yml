@@ -58,6 +58,10 @@ repair-assistant:
     chat-model: ${OPENAI_CHAT_MODEL:gpt-5-mini}
     embedding-model: ${OPENAI_EMBEDDING_MODEL:text-embedding-3-small}
     embedding-dimensions: ${OPENAI_EMBEDDING_DIMENSIONS:512}
+  moss:
+    base-url: ${MOSS_BASE_URL:https://api.mosi.cn/v1}
+    api-key: ${MOSS_API_KEY:}
+    transcription-model: ${MOSS_TRANSCRIPTION_MODEL:moss-transcribe-diarize-pro}
   recording:
     storage-path: ${RECORDING_STORAGE_PATH:./data/recordings}
     max-file-size-bytes: ${RECORDING_MAX_FILE_SIZE_BYTES:104857600}
