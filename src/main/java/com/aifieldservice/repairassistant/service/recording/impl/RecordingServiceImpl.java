@@ -79,6 +79,7 @@ public class RecordingServiceImpl implements RecordingService {
     @EventListener(ApplicationReadyEvent.class)
     public void resumeIncompleteTranscriptions() {
         mapper.listIncompleteFiles().forEach(file -> {
+            if(mapper.findMossPlayback(file.fileKey())!=null) return;
             mapper.updateFileStatus(file.id(), "FAILED", "REALTIME_INTERRUPTED", "会话已中断，请重头演示。");
             mapper.updateBatchStatus(file.batchId(), "FAILED", "会话已中断，请重头演示。");
         });
@@ -401,8 +402,12 @@ public class RecordingServiceImpl implements RecordingService {
         Map<String,List<RecordingViews.Evidence>> evidence=new HashMap<>();
         if(batch.extractionRevision()>0) for(var e:mapper.listEvidence(batch.id(),batch.extractionRevision())) evidence.computeIfAbsent(e.issueKey(),k->new ArrayList<>()).add(new RecordingViews.Evidence(e.fileKey(),e.originalName(),e.segmentKey(),e.speakerLabel(),e.speakerRoleCode(),e.startMs(),e.endMs(),e.originalText()));
         return new RecordingViews.Batch(batch.batchKey(),batch.languageCode(),batch.status(),batch.extractionRevision(),batch.extractionError(),
-            files.stream().map(f->new RecordingViews.File(f.fileKey(),f.originalName(),f.contentType(),f.sizeBytes(),f.status(),f.errorCode(),f.errorDetail(),mapper.listSegments(f.id()).stream().map(s->new RecordingViews.Segment(s.segmentKey(),s.sequenceNo(),s.speakerLabel(),s.speakerRoleCode(),s.speakerRoleConfidence(),s.speakerRoleSource(),s.startMs(),s.endMs(),s.originalText())).toList(),mapper.isRealtime(f.id()))).toList(),
+            files.stream().map(f->new RecordingViews.File(f.fileKey(),f.originalName(),f.contentType(),f.sizeBytes(),f.status(),f.errorCode(),f.errorDetail(),mapper.listSegments(f.id()).stream().map(s->new RecordingViews.Segment(s.segmentKey(),s.sequenceNo(),s.speakerLabel(),s.speakerRoleCode(),s.speakerRoleConfidence(),s.speakerRoleSource(),s.startMs(),s.endMs(),s.originalText())).toList(),mapper.isRealtime(f.id()),mossPlayback(f.fileKey()))).toList(),
             issues.stream().map(i->new RecordingViews.Issue(i.issueKey(),i.issueType(),i.content(),i.originalContent(),i.editedByUser(),i.deleted(),i.versionNo(),evidence.getOrDefault(i.issueKey(),List.of()),correctionView(corrections.get(i.id())))).toList(),batch.createdAt());
+    }
+    private RecordingViews.MossPlayback mossPlayback(String fileKey) {
+        var playback=mapper.findMossPlayback(fileKey);
+        return playback==null?null:new RecordingViews.MossPlayback(playback.positionMs(),playback.ended());
     }
     private RecordingViews.Correction correctionView(RecordingRows.Correction c){if(c==null)return null;List<String> ids=new ArrayList<>();try{json.readTree(c.evidenceSegmentIdsJson()).forEach(n->ids.add(n.asText()));}catch(Exception ignored){}String source=EquipmentIdentifierMatchingService.identifierSource(new OpenAiRecordingGateway.Extracted(c.fieldType(),c.sourceText()==null?c.originalValue():c.sourceText(),ids));return new RecordingViews.Correction(c.status(),c.originalValue(),c.suggestedValue(),c.modelValue(),source,c.ruleScore(),c.reason(),ids);}
     private void syncAcceptedErrorCode(RecordingRows.Batch batch,RecordingRows.Issue codeIssue,RecordingRows.Correction correction){syncAcceptedErrorCode(batch,codeIssue,correction,correction.suggestedValue());}

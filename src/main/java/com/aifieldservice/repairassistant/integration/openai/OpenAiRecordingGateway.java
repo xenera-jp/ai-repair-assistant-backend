@@ -57,8 +57,8 @@ public class OpenAiRecordingGateway {
         parts.add("model", diarizationModel);
         parts.add("response_format", "diarized_json");
         parts.add("chunking_strategy", "auto");
-        if ("ja-JP".equals(language)) parts.add("language", "ja");
-        if ("zh-CN".equals(language)) parts.add("language", "zh");
+        // Diarization targets Japanese recordings independently of the UI/realtime language.
+        parts.add("language", "ja");
         references.forEach((name, audio) -> {
             parts.add("known_speaker_names[]", name); parts.add("known_speaker_references[]", audio);
         });

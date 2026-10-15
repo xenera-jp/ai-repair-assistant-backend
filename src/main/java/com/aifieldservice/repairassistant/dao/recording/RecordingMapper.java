@@ -6,6 +6,8 @@ import com.aifieldservice.repairassistant.domain.recording.model.RecordingRows;
 
 /** MyBatis access point for recording batches, transcripts and extracted issues. */
 public interface RecordingMapper {
+    @org.apache.ibatis.annotations.Select("SELECT file_key,job_key,position_ms,ended,finalized FROM recording_moss_playback WHERE file_key=#{fileKey}")
+    MossRecordingMapper.Playback findMossPlayback(@Param("fileKey") String fileKey);
     @org.apache.ibatis.annotations.Update("UPDATE recording_transcript_segment SET deleted=TRUE,deleted_at=CURRENT_TIMESTAMP(6),delete_reason='DIARIZATION_REVISION' WHERE id=#{id} AND deleted=FALSE")
     int retireSegment(@Param("id") long id);
     @org.apache.ibatis.annotations.Update("UPDATE recording_transcript_segment SET sequence_no=#{sequence} WHERE id=#{id} AND deleted=FALSE")
