@@ -31,6 +31,8 @@ public class RealtimeRecordingService {
     public record Frame(long startSample, String audio) {}
     public record BatchAck(long nextSample, boolean blocked) {}
     public record Turn(int sequence, long startMs, long endMs, String speaker) {}
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    private com.aifieldservice.repairassistant.service.cost.ModelCostService costs;
     private final RecordingService recordings;
     private final OpenAiRealtimeGateway gateway;
     private final RecordingTranscriptionStream stream;
@@ -106,6 +108,7 @@ public class RealtimeRecordingService {
         final ArrayDeque<Turn> pending = new ArrayDeque<>();
         final Map<String, Turn> items = new ConcurrentHashMap<>();
         final Map<String, String> earlyFinal = new HashMap<>();
+        final Map<String, JsonNode> finalUsage = new HashMap<>();
         final java.util.Set<String> completed = ConcurrentHashMap.newKeySet();
         final CompletableFuture<Void> drained = new CompletableFuture<>();
         volatile OpenAiRealtimeGateway.Connection connection;
@@ -236,6 +239,7 @@ public class RealtimeRecordingService {
                     Turn turn=items.get(itemId);
                     if (!completed.contains(itemId) && (turn==null || turn.endMs()>confirmedUntil)) stream.publishDelta(batchId, fileId, itemId, event.path("delta").asText());
                 } else if ("conversation.item.input_audio_transcription.completed".equals(type)) {
+                    if (!completed.contains(itemId)) finalUsage.put(itemId, event);
                     if (items.containsKey(itemId)) complete(itemId, event.path("transcript").asText());
                     else { if (earlyFinal.size() >= 8) throw new IllegalStateException(); earlyFinal.put(itemId, event.path("transcript").asText()); }
                 } else if ("conversation.item.input_audio_transcription.failed".equals(type)) fail("部分音频转写失败，请重新演示。");
@@ -245,6 +249,9 @@ public class RealtimeRecordingService {
         private void complete(String itemId, String text) {
             if (completed.contains(itemId)) return;
             Turn turn = items.get(itemId);
+            JsonNode usage = finalUsage.remove(itemId);
+            if (costs != null) costs.record(batchId, "REALTIME_TRANSCRIPTION", properties.recording().transcriptionModel(), usage,
+                    java.math.BigDecimal.valueOf(Math.max(100, turn.endMs() - turn.startMs()), 3), id + "_" + itemId);
             synchronized(protectionLock) {
                 if(!text.isBlank()) realtimeText.put(itemId,new Transcript(itemId,turn.startMs(),turn.endMs(),"UNKNOWN",text));
                 // Cache even late completions: diarization may arrive before this final text.
@@ -285,7 +292,9 @@ public class RealtimeRecordingService {
                             try {
                                 synchronized(protectionLock) { persistProtected(true); }
                                 items.keySet().forEach(item -> stream.publishFinal(batchId,fileId,item));
-                                recordings.finishRealtime(fileId); cancel();
+                                recordings.finishRealtime(fileId);
+                                if(costs!=null)costs.complete(batchId,"REALTIME_TRANSCRIPTION");
+                                cancel();
                             }
                             catch (Exception e) { fail("实时转写收尾失败。"); }
                         }
@@ -299,6 +308,14 @@ public class RealtimeRecordingService {
         }
         synchronized void cancel() {
             if (closed) return;
+            try { if (costs != null) {
+                items.forEach((item, turn) -> {
+                    if (!completed.contains(item)) costs.record(batchId, "REALTIME_TRANSCRIPTION", properties.recording().transcriptionModel(), null, null, id + "_" + item);
+                });
+                pending.forEach(turn -> costs.record(batchId, "REALTIME_TRANSCRIPTION", properties.recording().transcriptionModel(), null, null, id + "_pending_" + turn.sequence()));
+            } } catch (RuntimeException error) {
+                org.slf4j.LoggerFactory.getLogger(RealtimeRecordingService.class).error("Unable to persist unfinished realtime usage for {}", batchId, error);
+            }
             closed = true; sessions.remove(id, this);
             capacity.release();
             if (connection != null) connection.close();

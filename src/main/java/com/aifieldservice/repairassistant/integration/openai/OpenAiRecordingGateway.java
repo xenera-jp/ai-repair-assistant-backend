@@ -45,9 +45,32 @@ public class OpenAiRecordingGateway {
     private final ObjectMapper objectMapper;
     @org.springframework.beans.factory.annotation.Value("${repair-assistant.recording.diarization-model:gpt-4o-transcribe-diarize}")
     private String diarizationModel = "gpt-4o-transcribe-diarize";
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    private com.aifieldservice.repairassistant.service.cost.ModelCostService costs;
+
+    private JsonNode billed(String scope, String category, String model, java.math.BigDecimal seconds,
+            java.util.function.Supplier<JsonNode> call) {
+        JsonNode response;
+        try { response = call.get(); }
+        catch (RuntimeException error) {
+            if (costs != null) costs.record(scope, category, model, null, null);
+            throw error;
+        }
+        if (costs != null) costs.record(scope, category, model, response, seconds);
+        return response;
+    }
+    private String scope(List<RecordingRows.Segment> segments) {
+        return costs == null || segments.isEmpty() ? null : costs.fileScope(segments.getFirst().recordingFileId());
+    }
+    public List<Transcript> diarizeForFile(String fileKey, byte[] wav, String language, Map<String,String> references) {
+        return diarize(wav, language, references, costs == null ? null : costs.fileScope(fileKey));
+    }
 
     /** Only audio already accepted from playback is supplied here. No full-file fallback. */
     public List<Transcript> diarize(byte[] wav, String language, Map<String, String> references) {
+        return diarize(wav, language, references, null);
+    }
+    private List<Transcript> diarize(byte[] wav, String language, Map<String,String> references, String scope) {
         if (!enabled()) throw new IllegalStateException("OpenAI API Key 未配置。");
         MultiValueMap<String, Object> parts = new LinkedMultiValueMap<>();
         var headers = new HttpHeaders(); headers.setContentType(MediaType.parseMediaType("audio/wav"));
@@ -62,8 +85,10 @@ public class OpenAiRecordingGateway {
         references.forEach((name, audio) -> {
             parts.add("known_speaker_names[]", name); parts.add("known_speaker_references[]", audio);
         });
-        JsonNode response = client.post().uri("/audio/transcriptions").contentType(MediaType.MULTIPART_FORM_DATA)
-                .body(parts).retrieve().body(JsonNode.class);
+        JsonNode response = billed(scope, "DIARIZATION", diarizationModel,
+                java.math.BigDecimal.valueOf(wav.length - 44L).divide(java.math.BigDecimal.valueOf(48000), 6, java.math.RoundingMode.HALF_UP),
+                () -> client.post().uri("/audio/transcriptions").contentType(MediaType.MULTIPART_FORM_DATA)
+                .body(parts).retrieve().body(JsonNode.class));
         if (response == null || !response.path("segments").isArray()) throw new IllegalStateException("分离结果缺少片段。");
         var result = new ArrayList<Transcript>();
         for (JsonNode segment : response.path("segments")) {
@@ -208,7 +233,7 @@ public class OpenAiRecordingGateway {
         if (!enabled() || segments.isEmpty()) return List.of();
         StringBuilder input = new StringBuilder("请判断每个说话人在设备报修对话中的业务角色。只能根据文本判断；不确定返回 UNKNOWN。\n");
         for (RecordingRows.Segment s : segments) input.append('[').append(s.speakerLabel()).append("] ").append(s.originalText()).append('\n');
-        JsonNode response = response(properties.openai().chatModel(), input.toString(), "recording_speaker_roles",
+        JsonNode response = response(scope(segments), "ROLE_RECOGNITION", properties.openai().chatModel(), input.toString(), "recording_speaker_roles",
                 objectSchema(Map.of("speakers", arraySchema(objectSchema(Map.of(
                         "speakerLabel", stringSchema(), "roleCode", enumSchema(List.of("CUSTOMER_SERVICE","CUSTOMER","FIELD_ENGINEER","OTHER","UNKNOWN")),
                         "confidence", numberSchema()), List.of("speakerLabel","roleCode","confidence")))), List.of("speakers")));
@@ -243,7 +268,7 @@ public class OpenAiRecordingGateway {
         for (RecordingRows.Segment s : segments) input.append("[segment=").append(s.segmentKey()).append(" file=").append(s.recordingFileId()).append(" speaker=")
                 .append(s.speakerLabel()).append(" role=").append(Optional.ofNullable(s.speakerRoleCode()).orElse("UNKNOWN"))
                 .append("] ").append(s.originalText()).append('\n');
-        JsonNode response = response(properties.openai().chatModel(), input.toString(), "recording_issues",
+        JsonNode response = response(scope(segments), "INFORMATION_EXTRACTION", properties.openai().chatModel(), input.toString(), "recording_issues",
                 objectSchema(Map.of("items", arraySchema(objectSchema(Map.of(
                         "type", enumSchema(List.of("MODEL","SYMPTOM","ERROR_CODE","OPERATING_STATUS","OCCURRENCE","MEASUREMENT","ENVIRONMENT","RECENT_CHANGES")),
                         "content", stringSchema(), "evidenceSegmentIds", arraySchema(stringSchema())),
@@ -283,7 +308,7 @@ public class OpenAiRecordingGateway {
                 """ + "\nitems=" + objectMapper.writeValueAsString(items)
                 + "\nsegments=" + objectMapper.writeValueAsString(segments)
                 + "\ncandidates=" + objectMapper.writeValueAsString(candidates);
-        JsonNode result = outputJson(response(properties.openai().chatModel(), input, "recording_identifier_matches",
+        JsonNode result = outputJson(response(scope(segments), "IDENTIFIER_MATCHING", properties.openai().chatModel(), input, "recording_identifier_matches",
                 objectSchema(Map.of("matches", arraySchema(objectSchema(Map.of(
                         "index", Map.of("type", "integer", "minimum", 0),
                         "status", enumSchema(List.of("MATCHED", "UNMATCHED")),
@@ -326,10 +351,10 @@ public class OpenAiRecordingGateway {
         return new IllegalStateException("设备型号/错误码知识库匹配结果无效，请重试提取。");
     }
 
-    private JsonNode response(String model, String input, String name, Map<String,Object> schema) {
+    private JsonNode response(String scope, String category, String model, String input, String name, Map<String,Object> schema) {
         Map<String,Object> body = Map.of("model", model, "store", false, "input", input,
                 "text", Map.of("format", Map.of("type","json_schema","name",name,"strict",true,"schema",schema)));
-        return client.post().uri("/responses").contentType(MediaType.APPLICATION_JSON).body(body).retrieve().body(JsonNode.class);
+        return billed(scope, category, model, null, () -> client.post().uri("/responses").contentType(MediaType.APPLICATION_JSON).body(body).retrieve().body(JsonNode.class));
     }
 
     private JsonNode outputJson(JsonNode response) {

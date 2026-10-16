@@ -33,6 +33,19 @@ public class OpenAiGateway {
     private final RepairAssistantProperties properties;
     private final RestClient client;
     private final ObjectMapper objectMapper;
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    private com.aifieldservice.repairassistant.service.cost.ModelCostService costs;
+    private JsonNode billed(String category, String model, java.util.function.Supplier<JsonNode> call) {
+        String scope = costs == null ? null : costs.requestScope();
+        JsonNode response;
+        try { response = call.get(); }
+        catch (RuntimeException error) {
+            if (costs != null) costs.record(scope, category, model, null, null);
+            throw error;
+        }
+        if (costs != null) costs.record(scope, category, model, response, null);
+        return response;
+    }
 
     public OpenAiGateway(
             RepairAssistantProperties properties,
@@ -66,12 +79,12 @@ public class OpenAiGateway {
                     "dimensions", properties.openai().embeddingDimensions(),
                     "encoding_format", "float",
                     "input", inputs);
-            JsonNode response = client.post()
+            JsonNode response = billed("EMBEDDING", properties.openai().embeddingModel(), () -> client.post()
                     .uri("/embeddings")
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(body)
                     .retrieve()
-                    .body(JsonNode.class);
+                    .body(JsonNode.class));
 
             if (response == null || !response.path("data").isArray()) {
                 return List.of();
@@ -160,12 +173,12 @@ public class OpenAiGateway {
                     "model", properties.openai().chatModel(),
                     "store", false,
                     "input", prompt);
-            JsonNode response = client.post()
+            JsonNode response = billed("DIAGNOSIS", properties.openai().chatModel(), () -> client.post()
                     .uri("/responses")
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(body)
                     .retrieve()
-                    .body(JsonNode.class);
+                    .body(JsonNode.class));
             if (response == null) {
                 return Optional.empty();
             }
@@ -234,12 +247,12 @@ public class OpenAiGateway {
                     "store", false,
                     "text", Map.of("format", semanticUnderstandingFormat(allowedFields)),
                     "input", prompt);
-            JsonNode response = client.post()
+            JsonNode response = billed("PROBLEM_UNDERSTANDING", properties.openai().chatModel(), () -> client.post()
                     .uri("/responses")
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(body)
                     .retrieve()
-                    .body(JsonNode.class);
+                    .body(JsonNode.class));
             String output = responseText(response);
             if (output.isBlank()) {
                 return Optional.empty();
