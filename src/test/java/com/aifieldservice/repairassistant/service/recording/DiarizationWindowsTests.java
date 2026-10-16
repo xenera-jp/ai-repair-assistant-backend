@@ -30,7 +30,7 @@ class DiarizationWindowsTests {
     private List<Transcript> dialogue() { return List.of(new Transcript("a",0,3000,"x","first speaker"),new Transcript("b",3000,6000,"y","second speaker")); }
     @Test void doesNotRequestUnplayedAudioAndSubmitsTailOnlyOnce() throws Exception {
         var gateway=mock(OpenAiRecordingGateway.class); var mapper=mock(DiarizationWindowMapper.class);
-        when(gateway.diarize(any(),eq("ja-JP"),anyMap())).thenReturn(dialogue());
+        when(gateway.diarizeForFile(anyString(),any(),eq("ja-JP"),anyMap())).thenReturn(dialogue());
         var service=new DiarizationWindows(gateway,mapper);
         var saves=new AtomicInteger();
         try {
@@ -39,22 +39,22 @@ class DiarizationWindowsTests {
             for(int i=0;i<60;i++) state.append(new byte[4800],false);
             verifyNoInteractions(gateway,mapper);
             state.finish().get(3,TimeUnit.SECONDS); state.finish().get(3,TimeUnit.SECONDS);
-            verify(gateway,times(1)).diarize(argThat(bytes -> bytes.length==6*48000+44),eq("ja-JP"),anyMap());
+            verify(gateway,times(1)).diarizeForFile(anyString(),argThat(bytes -> bytes.length==6*48000+44),eq("ja-JP"),anyMap());
             verify(mapper,times(1)).insert("session_0","session","file",0,6000,0);
             assertEquals(1,saves.get());
         } finally {service.close();}
     }
     @Test void failedWindowRetriesSameIdentifierAndBlocksFinishUntilExplicitRetry() throws Exception {
         var gateway=mock(OpenAiRecordingGateway.class); var mapper=mock(DiarizationWindowMapper.class);
-        when(gateway.diarize(any(),anyString(),anyMap())).thenThrow(new IllegalStateException("provider failed"));
+        when(gateway.diarizeForFile(anyString(),any(),anyString(),anyMap())).thenThrow(new IllegalStateException("provider failed"));
         var failed=new CountDownLatch(1); var service=new DiarizationWindows(gateway,mapper);
         try {
             var state=service.create("session","file","ja-JP",s -> {},d -> failed.countDown());
             for(int i=0;i<60;i++) state.append(new byte[4800],false);
             var finished=state.finish(); assertTrue(failed.await(3,TimeUnit.SECONDS));
             assertTrue(state.full()); assertFalse(finished.isDone());
-            verify(gateway,times(3)).diarize(any(),anyString(),anyMap());
-            doReturn(dialogue()).when(gateway).diarize(any(),anyString(),anyMap());
+            verify(gateway,times(3)).diarizeForFile(anyString(),any(),anyString(),anyMap());
+            doReturn(dialogue()).when(gateway).diarizeForFile(anyString(),any(),anyString(),anyMap());
             state.retry(); finished.get(3,TimeUnit.SECONDS);
             verify(mapper,times(1)).insert(anyString(),anyString(),anyString(),anyLong(),anyLong(),anyLong());
         } finally {service.close();}
@@ -62,7 +62,7 @@ class DiarizationWindowsTests {
     @Test void boundedBacklogAndCancellationIgnoreInflightResult() throws Exception {
         var gateway=mock(OpenAiRecordingGateway.class); var mapper=mock(DiarizationWindowMapper.class);
         var entered=new CountDownLatch(1); var release=new CountDownLatch(1);
-        when(gateway.diarize(any(),anyString(),anyMap())).thenAnswer(i -> { entered.countDown(); release.await(); return dialogue(); });
+        when(gateway.diarizeForFile(anyString(),any(),anyString(),anyMap())).thenAnswer(i -> { entered.countDown(); release.await(); return dialogue(); });
         var saves=new AtomicInteger(); var service=new DiarizationWindows(gateway,mapper);
         try {
             var state=service.create("session","file","ja-JP",s -> saves.incrementAndGet(),d -> {});
@@ -70,7 +70,7 @@ class DiarizationWindowsTests {
             assertTrue(entered.await(3,TimeUnit.SECONDS)); assertTrue(state.full());
             state.cancel(); release.countDown();
             service.close();
-            verify(gateway,timeout(1000).times(1)).diarize(any(),anyString(),anyMap());
+            verify(gateway,timeout(1000).times(1)).diarizeForFile(anyString(),any(),anyString(),anyMap());
             assertEquals(0,saves.get());
         } finally {release.countDown();service.close();}
     }

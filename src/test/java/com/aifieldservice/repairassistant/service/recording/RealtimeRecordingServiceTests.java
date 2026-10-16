@@ -192,4 +192,15 @@ class RealtimeRecordingServiceTests {
         service.cancel(id);
         assertThrows(ResponseStatusException.class,()->service.appendBatch(id,frames(0,1)));
     }
+
+    @Test void recordsOutOfOrderFinalUsageOnceAndDoesNotRebillDuplicateEvents() {
+        var costs=mock(com.aifieldservice.repairassistant.service.cost.ModelCostService.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(service,"costs",costs);
+        voicedTurn(0);
+        var usage=Map.of("input_tokens",10,"output_tokens",2,"seconds",1.8);
+        emit(Map.of("type","conversation.item.input_audio_transcription.completed","item_id","early","transcript","test","usage",usage));
+        emit(Map.of("type","input_audio_buffer.committed","item_id","early"));
+        emit(Map.of("type","conversation.item.input_audio_transcription.completed","item_id","early","transcript","test","usage",usage));
+        verify(costs,times(1)).record(eq("batch"),eq("REALTIME_TRANSCRIPTION"),anyString(),argThat(n->n.path("usage").path("input_tokens").asInt()==10),eq(new java.math.BigDecimal("1.800")),eq(id+"_early"));
+    }
 }

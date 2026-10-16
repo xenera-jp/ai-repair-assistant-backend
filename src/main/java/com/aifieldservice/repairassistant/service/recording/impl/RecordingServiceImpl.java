@@ -45,6 +45,9 @@ import jakarta.annotation.PreDestroy;
 
 @Service
 public class RecordingServiceImpl implements RecordingService {
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    private com.aifieldservice.repairassistant.service.cost.ModelCostService costs;
+
     private static final Set<String> EXTENSIONS = Set.of("flac","mp3","mp4","mpeg","mpga","m4a","ogg","wav","webm");
     private static final Set<String> ROLES = Set.of("CUSTOMER_SERVICE","CUSTOMER","FIELD_ENGINEER","OTHER","UNKNOWN");
     private static final List<String> TYPE_ORDER = List.of("MODEL","SYMPTOM","ERROR_CODE","OPERATING_STATUS","OCCURRENCE","MEASUREMENT","ENVIRONMENT","RECENT_CHANGES","PHOTO_EVIDENCE");
@@ -191,6 +194,7 @@ public class RecordingServiceImpl implements RecordingService {
             }
             if (order == 0) mapper.updateBatchStatus(batch.id(), "EXTRACTION_FAILED", "未提取到有原文证据的设备问题。");
             else mapper.updateBatchStatus(batch.id(), mapper.countPendingCorrections(batch.id(),revision)>0?"REVIEW_REQUIRED":"READY", null);
+            if(order>0 && costs!=null)costs.complete(batchKey,"DEVICE_EXTRACTION");
         } catch (Exception e) { mapper.updateBatchStatus(batch.id(), "EXTRACTION_FAILED", concise(e)); }
     }
 

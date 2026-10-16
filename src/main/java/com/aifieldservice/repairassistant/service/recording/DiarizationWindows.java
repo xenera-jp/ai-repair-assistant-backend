@@ -82,7 +82,7 @@ public class DiarizationWindows {
                 synchronized(this) { if(cancelled) { working=false; return; } }
                 try {
                     mapper.update(window.id(), "PROCESSING", attempt, null, null);
-                    segments=gateway.diarize(wav(window.pcm()), language, Map.copyOf(references));
+                    segments=gateway.diarizeForFile(file, wav(window.pcm()), language, Map.copyOf(references));
                     attemptsUsed=attempt;
                     mapper.update(window.id(), "DIARIZED", attempt, new ObjectMapper().writeValueAsString(segments), null);
                     break;

@@ -58,6 +58,24 @@ repair-assistant:
     chat-model: ${OPENAI_CHAT_MODEL:gpt-5-mini}
     embedding-model: ${OPENAI_EMBEDDING_MODEL:text-embedding-3-small}
     embedding-dimensions: ${OPENAI_EMBEDDING_DIMENSIONS:512}
+  # USD standard API rates; add an exact entry when changing model names.
+  # input/cached-input/audio-input/output: per 1M tokens; per-minute: audio duration.
+  model-pricing:
+    models:
+      "[gpt-5-mini]":
+        input: 0.25
+        cached-input: 0.025
+        output: 2.00
+      "[text-embedding-3-small]":
+        input: 0.02
+      "[gpt-live-transcribe]":
+        per-minute: 0.017
+      "[gpt-4o-transcribe-diarize]":
+        input: 2.50
+        audio-input: 6.00
+        output: 10.00
+        # diarized_json may omit tokens; this per-minute figure is an estimate.
+        estimated-per-minute: 0.006
   moss:
     base-url: ${MOSS_BASE_URL:https://api.mosi.cn/v1}
     api-key: ${MOSS_API_KEY:}
