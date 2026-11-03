@@ -87,3 +87,10 @@ See [the collaboration workstreams](docs/collaboration/WORKSTREAMS.md).
 
 For the complete server-side execution path, data layers, scoring rules and
 extension points, see [the server implementation guide](docs/SERVER_IMPLEMENTATION_GUIDE.md).
+
+Subpath deployment: see the frontend repository's `deploy/ec2/SUBPATH.md` for
+`/ai-repair/`, the confirmed workflow/script entry points, the Compose sample
+caveat, external gateway network requirements, and migration/rollback steps.
+The EC2 Compose sample is not evidence of the currently running EC2 setup.
+
+Backend replacement protection and acceptance/rollback steps: [BACKEND-SAFETY.md](deploy/ec2/BACKEND-SAFETY.md).
